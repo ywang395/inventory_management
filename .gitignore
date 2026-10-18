@@ -1,0 +1,18 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# CDK
+cdk.out/
+node_modules/
+
+# Secrets and local config (copy .env.example to .env)
+.env
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
