@@ -8,14 +8,15 @@ dependencies = []
 
 [tool.pytest.ini_options]
 # Lambda code is packaged from /backend, so tests import it the same way: `from core import ...`.
-pythonpath = ["backend"]
-testpaths = ["backend/tests"]
+# CDK code runs from /infra (`from stacks import ...`).
+pythonpath = ["backend", "infra"]
+testpaths = ["backend/tests", "infra/tests"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 # Folders that hold our own modules, so imports are sorted as first-party.
-src = ["backend", "backend/tests"]
+src = ["backend", "backend/tests", "infra"]
 
 [tool.ruff.lint]
 # E/F: pycodestyle + pyflakes, I: import sorting, UP: modern syntax, B: common bugs
@@ -23,6 +24,8 @@ select = ["E", "F", "I", "UP", "B"]
 
 [dependency-groups]
 dev = [
+    "aws-cdk-lib==2.273.0",
+    "constructs>=10.8.1",
     "pytest>=9.1.1",
     "ruff>=0.17.1",
 ]

@@ -1,0 +1,8 @@
+{
+  "name": "cafe-inventory-infra",
+  "private": true,
+  "description": "Pins the AWS CDK CLI for this project. Run it with `npx cdk ...` from /infra.",
+  "devDependencies": {
+    "aws-cdk": "2.1145.0"
+  }
+}

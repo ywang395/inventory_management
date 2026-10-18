@@ -10,7 +10,8 @@ This is a student portfolio project built part-time (10–15 hrs/week). A real s
 - `station/scanner_station.py` is the Raspberry Pi version (evdev + gpiozero), not yet tested on hardware (not in this repo yet).
 - `/backend/core` done: code types, units, undo, never-negative clamp, duplicate keys. Tested with pytest.
 - Phase 1 keeps it simple: each item has one `stock` number. Batches, expiry and FIFO come in Phase 2.
-- AWS backend not built yet (no CDK app, tables or handlers).
+- `/infra` CDK skeleton done. Deployed to `us-east-2`: `CDKToolkit` (bootstrap) and `CafeInventory-Budget` ($10/month alerts). `CafeInventory-dev` is still empty and not deployed.
+- No DynamoDB tables or Lambda handlers yet.
 
 Update this section as phases are completed.
 
@@ -21,7 +22,8 @@ All serverless on AWS, defined with AWS CDK (Python). No EC2, no RDS, nothing al
 ```
 Scanner station (Pi or laptop sim) --API key--> API Gateway --> Lambda --> DynamoDB
 Owner dashboard (React) --Cognito JWT-------->  API Gateway --> Lambda --> DynamoDB
-EventBridge (daily) --> Lambda --> SNS email (low stock, expiring batches)
+ScanLog --DynamoDB Streams--> alerts Lambda --> SNS email (below reorder point)
+EventBridge (daily) --> Lambda --> SNS email (expiring batches)
 Dashboard AI chat --> Lambda --> Bedrock (tool calling) --> Lambda tools --> DynamoDB
 ```
 
@@ -32,9 +34,18 @@ Dashboard AI chat --> Lambda --> Bedrock (tool calling) --> Lambda tools --> Dyn
 | Auth | Cognito user pool (owner/manager); scan-only API key for stations |
 | Backend | API Gateway (REST) + Lambda (Python 3.12) |
 | Database | DynamoDB (on-demand) |
-| Alerts | EventBridge Scheduler + SNS email (SMS later) |
+| Alerts | DynamoDB Streams → alerts Lambda (reorder points); EventBridge Scheduler daily job (expiry); SNS email (SMS later) |
 | AI agent | Amazon Bedrock with tool calling |
 | Infra | AWS CDK (Python), CloudWatch logs |
+
+## Key design decisions
+
+- **Multi-tenancy:** one shared system for all shops, data kept apart by key. Every DynamoDB key starts with `TENANT#<tenant_id>#` (e.g. `TENANT#cafe-01#ITEM#lids_12oz`). The API works out the tenant from the station's API key or the owner's Cognito login and **never trusts a `tenant_id` sent in the request body**. Big customers could later get their own separate deployment.
+- **Idempotent scans:** scan id = station + `scanned_at` (`scan_id()` in `/backend/core`). `POST /scan` saves with a DynamoDB conditional write, so a scan resent by the offline queue is ignored.
+- **Event-driven alerts:** the scan service only writes the log entry. DynamoDB Streams passes it to an alerts Lambda that checks reorder points, so scans stay fast and keep working if alerts fail. A daily EventBridge job catches expiring batches.
+- **Offline-first stations:** the station queues scans in SQLite when the internet drops and resends later; idempotency makes resending safe.
+- **Append-only log is the source of truth:** an item's `stock` is a running total that can always be rebuilt from ScanLog (sum of `change`). This makes undo, audits and bug fixes easier and feeds reorder predictions.
+- **Scaling:** Lambda and DynamoDB on-demand scale automatically, from one shop to hundreds. Watch per-tenant rate limits (an API Gateway usage plan per API key) and Bedrock costs.
 
 ## Repo layout (target)
 
@@ -73,6 +84,8 @@ CLAUDE.md
 
 Start with separate tables if single-table design slows progress.
 
+Keys: the key fields above are per shop. In DynamoDB every key is prefixed with the tenant, e.g. `TENANT#cafe-01#ITEM#lids_12oz` (see Key design decisions). `/backend/core` stays tenant-agnostic; the data layer adds the prefix.
+
 ScanLog notes: `id` is `station#scanned_at` (UTC), which is also the duplicate check key. `change` is what was actually applied to stock. `shortfall` = units asked for but not in stock (sets the item's `needs_count`). `undoes` = id of the entry an undo reverses.
 
 ## API (first version)
@@ -90,9 +103,10 @@ ScanLog notes: `id` is `station#scanned_at` (UTC), which is also the duplicate c
 ## Phases and tasks
 
 ### Phase 1 — Core API + scanner (target end of Nov 2026)
-- [ ] CDK app skeleton with dev stage, budget alarm, tags
-- [ ] DynamoDB tables for Item, Code, ScanLog, Staff (Batch table comes in Phase 2)
+- [x] CDK app skeleton with dev stage, budget alarm, tags
+- [ ] DynamoDB tables for Item, Code, ScanLog, Staff with `TENANT#` keys and a stream on ScanLog (Batch table comes in Phase 2)
 - [x] `/backend/core` inventory logic with pytest tests (units, undo, never negative, duplicates)
+- [ ] `recalculate_stock(entries)` in core: rebuild an item's stock from its ScanLog (for corrections and audits)
 - [ ] `POST /scan` Lambda + API Gateway with API key and usage plan
 - [ ] Seed script with sample items and codes
 - [ ] Point `scanner_sim.py` at the real API (`API_URL`, `API_KEY`)
@@ -101,7 +115,8 @@ ScanLog notes: `id` is `station#scanned_at` (UTC), which is also the duplicate c
 ### Phase 2 — Batches and expiry (target Dec 20)
 - [ ] `POST /batches` restock with expiry
 - [ ] FIFO deduction across batches (a first version with tests is in git commit `a4f068a`)
-- [ ] EventBridge daily job: expiring in 3 days + below reorder point → SNS email
+- [ ] Alerts Lambda on the ScanLog stream: item drops below reorder point → SNS email
+- [ ] EventBridge daily job: batches expiring in 3 days → SNS email
 
 ### Phase 3 — Owner dashboard (target Jan 24, 2027)
 - [ ] Cognito user pool and login
@@ -124,16 +139,25 @@ ScanLog notes: `id` is `station#scanned_at` (UTC), which is also the duplicate c
 
 - Python: type hints, small functions, `ruff` for lint/format, `pytest` for tests.
 - Python env is managed with `uv` (Python 3.12, same as Lambda): `uv sync`, `uv run pytest`, `uv run ruff check . && uv run ruff format .`
+- CDK: run from `/infra` with the pinned CLI: `npx cdk synth`, `npx cdk deploy <stack>`, `-c stage=dev|prod` (default `dev`). Needs `.env` (copy `.env.example`).
 - Business logic in `/backend/core` as pure functions; handlers only parse input, call core, write to DynamoDB.
 - Config via environment variables; never hard-code ARNs, keys or table names.
 - Never commit secrets. `.env` is git-ignored.
 - Least-privilege IAM: each Lambda gets only the tables and actions it needs.
 - Every new endpoint gets a test and a line in the API table above.
 
+## AWS account
+
+- Uses the **new AWS experience**: sign-in with an AWS Builder ID; resources live in the project "Touch Grass Later" (an AWS account managed by AWS). There is no root user or IAM user to manage.
+- **Region is fixed to `us-east-2` (Ohio).** AWS blocks other regions for this project (except global services). Deploy everything there.
+- CLI/CDK auth: `aws login` (official AWS CLI installer, not Homebrew), then pick the project in the browser. Credentials last 12 hours; run `aws login` again after that.
+- Free plan services cover everything planned (DynamoDB, Lambda, API Gateway, Cognito, S3, SNS, EventBridge, CloudFormation, IAM roles, Budgets). Organizations / IAM Identity Center are not available.
+- **Never "Activate advanced features"** in AWS Settings: it needs a paid upgrade and can't be undone.
+
 ## Cost guardrails
 
 - AWS Free Plan: credits, account closes after 6 months unless upgraded. Upgrade to Paid plan before April 2027.
-- Budget alert at $5–10. Serverless only. Delete unused stacks with `cdk destroy`.
+- Budget: `CafeInventory-Budget` stack, $10/month, emails at $5 spent, $10 spent and $10 forecast. Credits are excluded so it tracks real usage. Serverless only. Delete unused stacks with `cdk destroy`.
 - Bedrock and SMS cost money per use; use SNS email during development.
 
 ## How to work with me (Claude)
