@@ -5,10 +5,8 @@ The dataclasses are frozen: functions return new objects instead of changing old
 which keeps the logic easy to test.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import datetime
 from enum import StrEnum
 
 
@@ -33,7 +31,6 @@ class OutcomeStatus(StrEnum):
     APPLIED = "applied"
     DUPLICATE = "duplicate"
     NOTHING_TO_UNDO = "nothing_to_undo"
-    REJECTED = "rejected"
 
 
 @dataclass(frozen=True)
@@ -41,7 +38,8 @@ class Item:
     item_id: str
     name: str
     smallest_unit: str
-    has_expiry: bool
+    stock: int = 0  # current stock in smallest units, never below 0
+    needs_count: bool = False  # set when a scan asked for more than was in stock
     category: str = ""
     reorder_point: int = 0
     lead_time_days: int = 0
@@ -64,15 +62,6 @@ class Code:
 
 
 @dataclass(frozen=True)
-class Batch:
-    item_id: str
-    batch_id: str
-    quantity: int
-    received_on: date
-    expires_on: date | None = None
-
-
-@dataclass(frozen=True)
 class ScanRequest:
     """One scan sent by a station (body of POST /scan)."""
 
@@ -90,20 +79,8 @@ class ScanRequest:
 
 
 @dataclass(frozen=True)
-class Allocation:
-    """How much one log entry changed one batch (signed, smallest units)."""
-
-    batch_id: str
-    change: int
-
-
-@dataclass(frozen=True)
 class LogEntry:
-    """One append-only ScanLog row.
-
-    A single scan can touch several batches (FIFO), so the per-batch changes live in
-    `allocations`. `shortfall` is how many units were asked for but not in stock.
-    """
+    """One append-only ScanLog row."""
 
     entry_id: str
     item_id: str
@@ -112,26 +89,15 @@ class LogEntry:
     code: str
     staff: str
     station: str
-    allocations: tuple[Allocation, ...]
-    shortfall: int = 0
+    change: int  # change actually applied to stock (signed)
+    shortfall: int = 0  # units asked for but not in stock
     undoes: str | None = None  # entry_id of the entry this undo reverses
-
-    @property
-    def change(self) -> int:
-        """Total change actually applied to stock."""
-        return sum(a.change for a in self.allocations)
 
 
 @dataclass(frozen=True)
 class ScanOutcome:
-    """What the handler should do: write `entry` and the updated `batches`, or nothing."""
+    """What the handler should save: the new log entry and the updated item, or nothing."""
 
     status: OutcomeStatus
     entry: LogEntry | None = None
-    batches: tuple[Batch, ...] = ()  # only batches whose quantity changed or were created
-    reason: str = ""
-
-    @property
-    def needs_count(self) -> bool:
-        """True when stock was clamped at 0, so the item should be counted by hand."""
-        return self.entry is not None and self.entry.shortfall > 0
+    item: Item | None = None

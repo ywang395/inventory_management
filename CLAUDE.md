@@ -8,7 +8,8 @@ This is a student portfolio project built part-time (10–15 hrs/week). A real s
 
 - Phase 1 in progress. No Raspberry Pi yet: use `station/scanner_sim.py` on the laptop (not in this repo yet).
 - `station/scanner_station.py` is the Raspberry Pi version (evdev + gpiozero), not yet tested on hardware (not in this repo yet).
-- `/backend/core` done: code types, units, FIFO, undo, never-negative clamp, duplicate keys. Tested with pytest.
+- `/backend/core` done: code types, units, undo, never-negative clamp, duplicate keys. Tested with pytest.
+- Phase 1 keeps it simple: each item has one `stock` number. Batches, expiry and FIFO come in Phase 2.
 - AWS backend not built yet (no CDK app, tables or handlers).
 
 Update this section as phases are completed.
@@ -53,25 +54,26 @@ CLAUDE.md
 
 - **Smallest unit:** stock is always stored in the item's smallest unit (e.g. bags of lids). A code can represent several units (1 box = 12 bags).
 - **Codes:** our own codes start with `INV-` (e.g. `INV-LID12-1BAG`, `INV-LID12-1BOX`, `INV-LID12-RESTOCK-BOX`). Staff badges start with `STAFF-`. `INV-UNDO` reverses that station's last scan; a second `INV-UNDO` right after does nothing. Supplier UPC barcodes are also allowed and map to an item. Ignore any other scanned code.
-- **Batches:** items with expiry (dairy, ice cream) are tracked per batch with `expires_on`. Deductions are FIFO: oldest expiry first (ties: oldest `received_on`). Items without expiry use a single batch with `batch_id = "default"`. Items with expiry can't be restocked by scanning a code (no expiry date); use `POST /batches`.
+- **Stock (Phase 1):** each item has a single `stock` number. A scan adds or deducts the code's quantity.
+- **Batches (Phase 2, not built yet):** items with expiry (dairy, ice cream) are tracked per batch with `expires_on`. Deductions are FIFO: oldest expiry first. Items without expiry use a single batch.
 - **Scan log is append-only:** every scan, restock, undo and manual correction is a log entry. Undo creates a reversing entry, never deletes.
 - **Idempotency:** each scan carries `station` + `scanned_at`; the API must ignore duplicates (offline queue may resend).
-- **Never go negative:** if a deduction exceeds stock, record it, clamp the batch at 0 and flag the item for a count.
+- **Never go negative:** if a deduction exceeds stock, record it, clamp stock at 0 and flag the item for a count (`needs_count`).
 - **Reorder point** = avg daily usage × supplier lead time + safety stock. Math lives in `/backend/core`, never in the AI agent.
 
 ## Data model (DynamoDB, single table or a few tables — keep it simple)
 
 | Entity | Key fields | Other fields |
 | --- | --- | --- |
-| Item | `item_id` | name, category, smallest_unit, reorder_point, lead_time_days, has_expiry, needs_count |
+| Item | `item_id` | name, category, smallest_unit, stock, needs_count, reorder_point, lead_time_days (has_expiry: Phase 2) |
 | Code | `code` | item_id, quantity (signed, smallest units: negative for `take`, positive for `restock`), action (`take` / `restock`) |
-| Batch | `item_id`, `batch_id` | quantity, received_on, expires_on |
-| ScanLog | `item_id`, `timestamp#id` | code, staff, station, action (`take` / `restock` / `undo` / `correction`), allocations `[{batch_id, change}]`, shortfall, undoes |
+| Batch (Phase 2) | `item_id`, `batch_id` | quantity, received_on, expires_on |
+| ScanLog | `item_id`, `timestamp#id` | code, change, shortfall, staff, station, action (`take` / `restock` / `undo` / `correction`), undoes |
 | Staff | `staff_code` | name, active |
 
 Start with separate tables if single-table design slows progress.
 
-ScanLog notes: `id` is `station#scanned_at` (UTC), which is also the duplicate check key. One scan can touch several batches (FIFO), so per-batch changes go in `allocations`; total change = sum of allocations. `shortfall` = units asked for but not in stock (sets the item's `needs_count`). `undoes` = id of the entry an undo reverses.
+ScanLog notes: `id` is `station#scanned_at` (UTC), which is also the duplicate check key. `change` is what was actually applied to stock. `shortfall` = units asked for but not in stock (sets the item's `needs_count`). `undoes` = id of the entry an undo reverses.
 
 ## API (first version)
 
@@ -89,8 +91,8 @@ ScanLog notes: `id` is `station#scanned_at` (UTC), which is also the duplicate c
 
 ### Phase 1 — Core API + scanner (target end of Nov 2026)
 - [ ] CDK app skeleton with dev stage, budget alarm, tags
-- [ ] DynamoDB tables for Item, Code, Batch, ScanLog, Staff
-- [x] `/backend/core` inventory logic with pytest tests (units, FIFO, undo, never negative, duplicates)
+- [ ] DynamoDB tables for Item, Code, ScanLog, Staff (Batch table comes in Phase 2)
+- [x] `/backend/core` inventory logic with pytest tests (units, undo, never negative, duplicates)
 - [ ] `POST /scan` Lambda + API Gateway with API key and usage plan
 - [ ] Seed script with sample items and codes
 - [ ] Point `scanner_sim.py` at the real API (`API_URL`, `API_KEY`)
@@ -98,7 +100,7 @@ ScanLog notes: `id` is `station#scanned_at` (UTC), which is also the duplicate c
 
 ### Phase 2 — Batches and expiry (target Dec 20)
 - [ ] `POST /batches` restock with expiry
-- [ ] FIFO deduction across batches
+- [ ] FIFO deduction across batches (a first version with tests is in git commit `a4f068a`)
 - [ ] EventBridge daily job: expiring in 3 days + below reorder point → SNS email
 
 ### Phase 3 — Owner dashboard (target Jan 24, 2027)

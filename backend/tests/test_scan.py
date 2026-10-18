@@ -2,100 +2,78 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from core.models import Allocation, LogAction, OutcomeStatus
-from core.scan import DEFAULT_BATCH_ID, process_scan, scan_id
-from factories import (
-    LID_BAG,
-    LID_BOX,
-    LID_RESTOCK_BOX,
-    LIDS,
-    MILK,
-    MILK_CRATE,
-    MILK_RESTOCK_CRATE,
-    T0,
-    batch,
-    quantities,
-    scan,
-)
+from core.models import Item, LogAction, OutcomeStatus
+from core.scan import clamp_stock, process_scan, scan_id
+from factories import LID_BAG, LID_BOX, LID_RESTOCK_BOX, T0, lids, scan
 
 # --- Units: a code can stand for several smallest units -------------------------------
 
 
 def test_box_code_deducts_twelve_bags() -> None:
-    outcome = process_scan(scan(LID_BOX.code), LID_BOX, LIDS, [batch("lid12", "default", 30)])
+    outcome = process_scan(scan(LID_BOX.code), LID_BOX, lids(stock=30))
     assert outcome.status is OutcomeStatus.APPLIED
-    assert quantities(outcome.batches) == {"default": 18}
-    assert outcome.entry is not None
+    assert outcome.item is not None and outcome.entry is not None
+    assert outcome.item.stock == 18
     assert outcome.entry.action is LogAction.TAKE
     assert outcome.entry.change == -12
-    assert not outcome.needs_count
+    assert not outcome.item.needs_count
 
 
 def test_bag_code_deducts_one_bag() -> None:
-    outcome = process_scan(scan(LID_BAG.code), LID_BAG, LIDS, [batch("lid12", "default", 30)])
-    assert quantities(outcome.batches) == {"default": 29}
+    outcome = process_scan(scan(LID_BAG.code), LID_BAG, lids(stock=30))
+    assert outcome.item is not None
+    assert outcome.item.stock == 29
 
 
-def test_restock_code_adds_to_the_single_batch() -> None:
-    outcome = process_scan(
-        scan(LID_RESTOCK_BOX.code), LID_RESTOCK_BOX, LIDS, [batch("lid12", DEFAULT_BATCH_ID, 3)]
-    )
-    assert quantities(outcome.batches) == {DEFAULT_BATCH_ID: 15}
-    assert outcome.entry is not None
+def test_restock_code_adds_twelve_bags() -> None:
+    outcome = process_scan(scan(LID_RESTOCK_BOX.code), LID_RESTOCK_BOX, lids(stock=3))
+    assert outcome.item is not None and outcome.entry is not None
+    assert outcome.item.stock == 15
     assert outcome.entry.action is LogAction.RESTOCK
     assert outcome.entry.change == 12
-
-
-def test_first_restock_creates_the_single_batch() -> None:
-    outcome = process_scan(scan(LID_RESTOCK_BOX.code), LID_RESTOCK_BOX, LIDS, [])
-    (new_batch,) = outcome.batches
-    assert new_batch.batch_id == DEFAULT_BATCH_ID
-    assert new_batch.quantity == 12
-    assert new_batch.received_on == T0.date()
-
-
-def test_restock_scan_is_rejected_for_items_with_expiry() -> None:
-    outcome = process_scan(scan(MILK_RESTOCK_CRATE.code), MILK_RESTOCK_CRATE, MILK, [])
-    assert outcome.status is OutcomeStatus.REJECTED
-    assert "POST /batches" in outcome.reason
-    assert outcome.entry is None
-    assert outcome.batches == ()
-
-
-# --- FIFO through a real scan ---------------------------------------------------------
-
-
-def test_take_uses_oldest_batch_first_and_can_span_batches() -> None:
-    batches = [
-        batch("milk", "b-new", 10, expires_in_days=7),
-        batch("milk", "b-old", 4, expires_in_days=2),
-    ]
-    outcome = process_scan(scan(MILK_CRATE.code), MILK_CRATE, MILK, batches)
-    assert outcome.entry is not None
-    assert outcome.entry.allocations == (Allocation("b-old", -4), Allocation("b-new", -2))
-    assert quantities(outcome.batches) == {"b-old": 0, "b-new": 8}
 
 
 # --- Never go negative ----------------------------------------------------------------
 
 
 def test_taking_more_than_stock_clamps_at_zero_and_flags_a_count() -> None:
-    outcome = process_scan(scan(LID_BOX.code), LID_BOX, LIDS, [batch("lid12", "default", 5)])
+    outcome = process_scan(scan(LID_BOX.code), LID_BOX, lids(stock=5))
     assert outcome.status is OutcomeStatus.APPLIED  # the scan is still recorded
-    assert quantities(outcome.batches) == {"default": 0}
-    assert outcome.entry is not None
+    assert outcome.item is not None and outcome.entry is not None
+    assert outcome.item.stock == 0
+    assert outcome.item.needs_count
     assert outcome.entry.change == -5
     assert outcome.entry.shortfall == 7
-    assert outcome.needs_count
 
 
 def test_taking_with_no_stock_records_the_full_shortfall() -> None:
-    outcome = process_scan(scan(LID_BAG.code), LID_BAG, LIDS, [])
-    assert outcome.entry is not None
-    assert outcome.entry.allocations == ()
+    outcome = process_scan(scan(LID_BAG.code), LID_BAG, lids(stock=0))
+    assert outcome.item is not None and outcome.entry is not None
+    assert outcome.item.stock == 0
+    assert outcome.item.needs_count
+    assert outcome.entry.change == 0
     assert outcome.entry.shortfall == 1
-    assert outcome.batches == ()
-    assert outcome.needs_count
+
+
+def test_restock_does_not_clear_the_count_flag() -> None:
+    # Only a manual count (POST /corrections) should clear it.
+    item = lids(stock=0, needs_count=True)
+    outcome = process_scan(scan(LID_RESTOCK_BOX.code), LID_RESTOCK_BOX, item)
+    assert outcome.item is not None
+    assert outcome.item.needs_count
+
+
+@pytest.mark.parametrize(
+    "stock, change, expected",
+    [
+        (10, -3, (7, 0)),
+        (10, 5, (15, 0)),
+        (2, -5, (0, 3)),
+        (0, -1, (0, 1)),
+    ],
+)
+def test_clamp_stock(stock: int, change: int, expected: tuple[int, int]) -> None:
+    assert clamp_stock(stock, change) == expected
 
 
 # --- Log entry contents ---------------------------------------------------------------
@@ -103,8 +81,7 @@ def test_taking_with_no_stock_records_the_full_shortfall() -> None:
 
 def test_log_entry_records_who_where_and_when() -> None:
     request = scan(LID_BAG.code, station="door-2", staff="STAFF-042")
-    outcome = process_scan(request, LID_BAG, LIDS, [batch("lid12", "default", 30)])
-    entry = outcome.entry
+    entry = process_scan(request, LID_BAG, lids()).entry
     assert entry is not None
     assert entry.entry_id == scan_id("door-2", request.scanned_at)
     assert entry.item_id == "lid12"
@@ -113,12 +90,6 @@ def test_log_entry_records_who_where_and_when() -> None:
     assert entry.station == "door-2"
     assert entry.timestamp == request.scanned_at
     assert entry.undoes is None
-
-
-def test_input_batches_are_not_changed() -> None:
-    batches = [batch("lid12", "default", 30)]
-    process_scan(scan(LID_BOX.code), LID_BOX, LIDS, batches)
-    assert quantities(batches) == {"default": 30}
 
 
 # --- Duplicates (offline queue may resend) --------------------------------------------
@@ -141,30 +112,23 @@ def test_scan_id_needs_time_zone() -> None:
 
 
 def test_resent_scan_gets_the_same_entry_id() -> None:
-    batches = [batch("lid12", "default", 30)]
-    first = process_scan(scan(LID_BAG.code), LID_BAG, LIDS, batches)
-    resent = process_scan(scan(LID_BAG.code), LID_BAG, LIDS, batches)
+    first = process_scan(scan(LID_BAG.code), LID_BAG, lids())
+    resent = process_scan(scan(LID_BAG.code), LID_BAG, lids())
     assert first.entry is not None and resent.entry is not None
     assert first.entry.entry_id == resent.entry.entry_id
 
 
 def test_already_seen_scan_is_a_duplicate_and_changes_nothing() -> None:
-    outcome = process_scan(
-        scan(LID_BOX.code), LID_BOX, LIDS, [batch("lid12", "default", 30)], already_seen=True
-    )
+    outcome = process_scan(scan(LID_BOX.code), LID_BOX, lids(), already_seen=True)
     assert outcome.status is OutcomeStatus.DUPLICATE
     assert outcome.entry is None
-    assert outcome.batches == ()
+    assert outcome.item is None
 
 
 # --- Safety checks --------------------------------------------------------------------
 
 
 def test_code_for_another_item_is_an_error() -> None:
+    milk = Item(item_id="milk", name="Whole milk", smallest_unit="carton")
     with pytest.raises(ValueError):
-        process_scan(scan(MILK_CRATE.code), MILK_CRATE, LIDS, [])
-
-
-def test_batch_for_another_item_is_an_error() -> None:
-    with pytest.raises(ValueError):
-        process_scan(scan(LID_BAG.code), LID_BAG, LIDS, [batch("milk", "b1", 3)])
+        process_scan(scan(LID_BAG.code), LID_BAG, milk)
