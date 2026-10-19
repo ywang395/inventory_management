@@ -49,7 +49,12 @@ class ShopSettings:
         try:
             ZoneInfo(self.timezone)
         except (ZoneInfoNotFoundError, ValueError) as error:
-            raise ValueError(f"Unknown time zone {self.timezone!r}") from error
+            # On a machine without the time zone database, every name fails here;
+            # installing the `tzdata` package fixes that.
+            raise ValueError(
+                f"Unknown time zone {self.timezone!r} (or the time zone database is missing:"
+                " install tzdata)"
+            ) from error
 
     @property
     def zone(self) -> ZoneInfo:

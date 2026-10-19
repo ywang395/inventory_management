@@ -11,8 +11,8 @@ This is a student portfolio project built part-time (10–15 hrs/week). A real s
 - `/backend/core` done: code types, units, undo by code (today, this station), never-negative clamp, duplicate keys, shop settings (optional staff badges). Tested with pytest.
 - Phase 1 keeps it simple: each item has one `stock` number. Batches, expiry and FIFO come in Phase 2.
 - `/infra` CDK skeleton done. Deployed to `us-east-2`: `CDKToolkit` (bootstrap) and `CafeInventory-Budget` ($10/month alerts). `CafeInventory-dev` is still empty and not deployed.
-- DynamoDB tables defined in `CafeInventory-dev` (6 tables, see Data model) with key builders in `backend/store/keys.py`. Not deployed yet.
-- No Lambda handlers yet.
+- DynamoDB tables defined in `CafeInventory-dev` (6 tables, see Data model) with key builders in `backend/store/keys.py`. Deployed to `us-east-2` (empty).
+- `POST /scan` and `GET /station/config` built (handlers in `backend/handlers`, DynamoDB access in `backend/store/dynamo.py`, API Gateway + Lambdas in `InventoryStack`). Tested with moto; not deployed yet. Lambda's time zone database is unchecked (see the task).
 
 Update this section as phases are completed.
 
@@ -101,8 +101,8 @@ Separate tables (one per entity), all on-demand. Attribute names are `pk` / `sk`
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| POST | `/scan` | API key | Body: `{code, action: "scan" or "undo", staff (optional), station, scanned_at}`. For undo, `code` is the code to undo. |
-| GET | `/station/config` | API key | Shop settings the station needs (badge required?, time zone, shop name); the station caches them for offline use |
+| POST | `/scan` | API key | Body: `{code, action: "scan" or "undo", staff (optional), scanned_at}`. For undo, `code` is the code to undo. The station and shop come from the API key; any `station` / `tenant_id` in the body is ignored. Replies 200 `{status: applied / duplicate / nothing_to_undo / rejected / ignored, message, item?, change?}`, 400 bad request, 403 unregistered key, 503 busy (resend later). |
+| GET | `/station/config` | API key | Shop settings the station needs (shop and station name, time zone, badge settings); the station caches them for offline use |
 | GET | `/items` | Cognito | Items with current stock and status |
 | POST | `/items` | Cognito | Create item |
 | POST | `/codes` | Cognito | Create code for an item |
@@ -118,7 +118,7 @@ Separate tables (one per entity), all on-demand. Attribute names are `pk` / `sk`
 - [x] Undo by code (today, this station) and owner settings for staff badges, in core
 - [x] `/backend/core` inventory logic with pytest tests (units, undo, never negative, duplicates)
 - [ ] `recalculate_stock(entries)` in core: rebuild an item's stock from its ScanLog (for corrections and audits)
-- [ ] `POST /scan` + `GET /station/config` Lambdas + API Gateway with API key and usage plan (check the time zone database exists on Lambda; add the `tzdata` package if not)
+- [ ] `POST /scan` + `GET /station/config` Lambdas + API Gateway with API key and usage plan. Built and tested; still to do: deploy, then check with the seed script that a scan changes stock, and that the time zone database exists on Lambda (add the `tzdata` package if not)
 - [ ] Seed script with sample items and codes
 - [ ] Point `scanner_sim.py` at the real API (`API_URL`, `API_KEY`)
 - [ ] Script to print the door scan sheet (QR codes for each `INV-` code)
@@ -149,6 +149,7 @@ Separate tables (one per entity), all on-demand. Attribute names are `pk` / `sk`
 ## Conventions
 
 - Python: type hints, small functions, `ruff` for lint/format, `pytest` for tests.
+- DynamoDB code is tested against `moto` (a fake DynamoDB in memory, `backend/tests/conftest.py`); tests never touch the real account.
 - Python env is managed with `uv` (Python 3.12, same as Lambda): `uv sync`, `uv run pytest`, `uv run ruff check . && uv run ruff format .`
 - CDK: run from `/infra` with the pinned CLI: `npx cdk synth`, `npx cdk deploy <stack>`, `-c stage=dev|prod` (default `dev`). Needs `.env` (copy `.env.example`).
 - Business logic in `/backend/core` as pure functions; handlers only parse input, call core, write to DynamoDB.
