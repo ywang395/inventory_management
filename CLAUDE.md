@@ -8,10 +8,11 @@ This is a student portfolio project built part-time (10–15 hrs/week). A real s
 
 - Phase 1 in progress. No Raspberry Pi yet: use `station/scanner_sim.py` on the laptop (not in this repo yet).
 - `station/scanner_station.py` is the Raspberry Pi version (evdev + gpiozero), not yet tested on hardware (not in this repo yet).
-- `/backend/core` done: code types, units, undo, never-negative clamp, duplicate keys. Tested with pytest.
+- `/backend/core` done: code types, units, undo by code (today, this station), never-negative clamp, duplicate keys, shop settings (optional staff badges). Tested with pytest.
 - Phase 1 keeps it simple: each item has one `stock` number. Batches, expiry and FIFO come in Phase 2.
 - `/infra` CDK skeleton done. Deployed to `us-east-2`: `CDKToolkit` (bootstrap) and `CafeInventory-Budget` ($10/month alerts). `CafeInventory-dev` is still empty and not deployed.
-- No DynamoDB tables or Lambda handlers yet.
+- DynamoDB tables defined in `CafeInventory-dev` (6 tables, see Data model) with key builders in `backend/store/keys.py`. Not deployed yet.
+- No Lambda handlers yet.
 
 Update this section as phases are completed.
 
@@ -41,7 +42,7 @@ Dashboard AI chat --> Lambda --> Bedrock (tool calling) --> Lambda tools --> Dyn
 ## Key design decisions
 
 - **Multi-tenancy:** one shared system for all shops, data kept apart by key. Every DynamoDB key starts with `TENANT#<tenant_id>#` (e.g. `TENANT#cafe-01#ITEM#lids_12oz`). The API works out the tenant from the station's API key or the owner's Cognito login and **never trusts a `tenant_id` sent in the request body**. Big customers could later get their own separate deployment.
-- **Idempotent scans:** scan id = station + `scanned_at` (`scan_id()` in `/backend/core`). `POST /scan` saves with a DynamoDB conditional write, so a scan resent by the offline queue is ignored.
+- **Idempotent scans:** scan id = station + `scanned_at` (`scan_id()` in `/backend/core`), which is also the ScanLog key. `POST /scan` saves with a DynamoDB conditional write, so a scan resent by the offline queue is ignored. The station must set `scanned_at` once (microseconds, saved in its queue) and reuse it on resend.
 - **Event-driven alerts:** the scan service only writes the log entry. DynamoDB Streams passes it to an alerts Lambda that checks reorder points, so scans stay fast and keep working if alerts fail. A daily EventBridge job catches expiring batches.
 - **Offline-first stations:** the station queues scans in SQLite when the internet drops and resends later; idempotency makes resending safe.
 - **Append-only log is the source of truth:** an item's `stock` is a running total that can always be rebuilt from ScanLog (sum of `change`). This makes undo, audits and bug fixes easier and feeds reorder predictions.
@@ -54,6 +55,7 @@ Dashboard AI chat --> Lambda --> Bedrock (tool calling) --> Lambda tools --> Dyn
 /backend        Lambda handlers + shared logic
   /handlers     one file per endpoint
   /core         inventory logic (FIFO, units, reorder math) — pure functions, no AWS calls
+  /store        DynamoDB data layer (key formats in keys.py; adds the tenant prefix)
   /tests        pytest
 /station        scanner_sim.py, scanner_station.py
 /dashboard      React app
@@ -64,7 +66,11 @@ CLAUDE.md
 ## Domain rules (important)
 
 - **Smallest unit:** stock is always stored in the item's smallest unit (e.g. bags of lids). A code can represent several units (1 box = 12 bags).
-- **Codes:** our own codes start with `INV-` (e.g. `INV-LID12-1BAG`, `INV-LID12-1BOX`, `INV-LID12-RESTOCK-BOX`). Staff badges start with `STAFF-`. `INV-UNDO` reverses that station's last scan; a second `INV-UNDO` right after does nothing. Supplier UPC barcodes are also allowed and map to an item. Ignore any other scanned code.
+- **Codes:** our own codes start with `INV-` (e.g. `INV-LID12-1BAG`, `INV-LID12-1BOX`, `INV-LID12-RESTOCK-BOX`). Staff badges start with `STAFF-`. Supplier UPC barcodes are also allowed and map to an item. Ignore any other scanned code.
+- **Undo:** scanning `INV-UNDO` puts the station in undo mode (about 10 s, shown on screen; cancelled by another `INV-UNDO` or a badge). The next code scanned reverses the most recent not-yet-undone scan of exactly that code, made today (shop's local time) at this station. Repeat to undo more. Nothing matching → "Nothing to undo". Older mistakes are fixed with a manager correction. The station sends one request: `{action: "undo", code: <code to undo>}`.
+- **Staff badges are optional per shop** (owner's setting on the Shops record):
+  - `require_staff_badge` (default off): when on, every scan and undo needs a valid, active `STAFF-` badge. The API enforces this, not the station. When off, scans need no badge (staff is recorded only if sent).
+  - `undo_own_scans_only` (default off, only allowed when badges are on): staff can only undo their own scans.
 - **Stock (Phase 1):** each item has a single `stock` number. A scan adds or deducts the code's quantity.
 - **Batches (Phase 2, not built yet):** items with expiry (dairy, ice cream) are tracked per batch with `expires_on`. Deductions are FIFO: oldest expiry first. Items without expiry use a single batch.
 - **Scan log is append-only:** every scan, restock, undo and manual correction is a log entry. Undo creates a reversing entry, never deletes.
@@ -74,25 +80,29 @@ CLAUDE.md
 
 ## Data model (DynamoDB, single table or a few tables — keep it simple)
 
-| Entity | Key fields | Other fields |
-| --- | --- | --- |
-| Item | `item_id` | name, category, smallest_unit, stock, needs_count, reorder_point, lead_time_days (has_expiry: Phase 2) |
-| Code | `code` | item_id, quantity (signed, smallest units: negative for `take`, positive for `restock`), action (`take` / `restock`) |
-| Batch (Phase 2) | `item_id`, `batch_id` | quantity, received_on, expires_on |
-| ScanLog | `item_id`, `timestamp#id` | code, change, shortfall, staff, station, action (`take` / `restock` / `undo` / `correction`), undoes |
-| Staff | `staff_code` | name, active |
+Separate tables (one per entity), all on-demand. Attribute names are `pk` / `sk`; key formats live in `backend/store/keys.py` (the infra tests check the stack matches). Shop ids look like `cafe-01`.
 
-Start with separate tables if single-table design slows progress.
+| Table | `pk` | `sk` | Other fields |
+| --- | --- | --- | --- |
+| Shops | `TENANT#cafe-01` | — | name, timezone (e.g. `America/Los_Angeles`), require_staff_badge, undo_own_scans_only |
+| Items | `TENANT#cafe-01` | `ITEM#lids_12oz` | name, category, smallest_unit, stock, needs_count, reorder_point, lead_time_days (has_expiry: Phase 2) |
+| Codes | `TENANT#cafe-01` | `CODE#INV-LID12-1BOX` | item_id, quantity (signed, smallest units: negative for `take`, positive for `restock`), action (`take` / `restock`) |
+| Staff | `TENANT#cafe-01` | `STAFF#STAFF-001` | name, active |
+| Stations | `APIKEY#<api key id>` | — | tenant_id, station_id, name |
+| ScanLog | `TENANT#cafe-01#STATION#door-1` | `scanned_at` (UTC, microseconds) | item_id, item_pk, code, change, shortfall, staff (optional), action (`take` / `restock` / `undo` / `correction`), undoes |
+| Batch (Phase 2) | | | quantity, received_on, expires_on |
 
-Keys: the key fields above are per shop. In DynamoDB every key is prefixed with the tenant, e.g. `TENANT#cafe-01#ITEM#lids_12oz` (see Key design decisions). `/backend/core` stays tenant-agnostic; the data layer adds the prefix.
-
-ScanLog notes: `id` is `station#scanned_at` (UTC), which is also the duplicate check key. `change` is what was actually applied to stock. `shortfall` = units asked for but not in stock (sets the item's `needs_count`). `undoes` = id of the entry an undo reverses.
+- **Stations** is the only table without a tenant prefix: looking up the API key is how the API finds the tenant.
+- **ScanLog** key = station + `scanned_at` = the duplicate check (conditional write). Index `by_item` (`item_pk` = `TENANT#cafe-01#ITEM#lids_12oz`, `sk`) gives an item's history across stations. A stream (`NEW_IMAGE`) will feed the alerts Lambda. `change` is what was actually applied to stock; `shortfall` = units asked for but not in stock (sets the item's `needs_count`); `undoes` = id (`station#scanned_at`) of the entry an undo reverses.
+- **dev** tables are deleted by `cdk destroy`; **prod** tables are retained, deletion-protected and have point-in-time backups.
+- `/backend/core` stays tenant-agnostic; `/backend/store` adds the prefix.
 
 ## API (first version)
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| POST | `/scan` | API key | Body: `{code, action: "scan" or "undo", staff, station, scanned_at}` |
+| POST | `/scan` | API key | Body: `{code, action: "scan" or "undo", staff (optional), station, scanned_at}`. For undo, `code` is the code to undo. |
+| GET | `/station/config` | API key | Shop settings the station needs (badge required?, time zone, shop name); the station caches them for offline use |
 | GET | `/items` | Cognito | Items with current stock and status |
 | POST | `/items` | Cognito | Create item |
 | POST | `/codes` | Cognito | Create code for an item |
@@ -104,10 +114,11 @@ ScanLog notes: `id` is `station#scanned_at` (UTC), which is also the duplicate c
 
 ### Phase 1 — Core API + scanner (target end of Nov 2026)
 - [x] CDK app skeleton with dev stage, budget alarm, tags
-- [ ] DynamoDB tables for Item, Code, ScanLog, Staff with `TENANT#` keys and a stream on ScanLog (Batch table comes in Phase 2)
+- [x] DynamoDB tables (Shops, Items, Codes, Staff, Stations, ScanLog) with `TENANT#` keys and a stream on ScanLog (Batch table comes in Phase 2)
+- [x] Undo by code (today, this station) and owner settings for staff badges, in core
 - [x] `/backend/core` inventory logic with pytest tests (units, undo, never negative, duplicates)
 - [ ] `recalculate_stock(entries)` in core: rebuild an item's stock from its ScanLog (for corrections and audits)
-- [ ] `POST /scan` Lambda + API Gateway with API key and usage plan
+- [ ] `POST /scan` + `GET /station/config` Lambdas + API Gateway with API key and usage plan (check the time zone database exists on Lambda; add the `tzdata` package if not)
 - [ ] Seed script with sample items and codes
 - [ ] Point `scanner_sim.py` at the real API (`API_URL`, `API_KEY`)
 - [ ] Script to print the door scan sheet (QR codes for each `INV-` code)

@@ -8,6 +8,7 @@ which keeps the logic easy to test.
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 class CodeAction(StrEnum):
@@ -31,6 +32,35 @@ class OutcomeStatus(StrEnum):
     APPLIED = "applied"
     DUPLICATE = "duplicate"
     NOTHING_TO_UNDO = "nothing_to_undo"
+    REJECTED = "rejected"
+
+
+@dataclass(frozen=True)
+class ShopSettings:
+    """Options the shop owner chooses (stored on the shop's Shops record)."""
+
+    timezone: str  # IANA name, e.g. "America/Los_Angeles"; decides what "today" means
+    require_staff_badge: bool = False  # every scan needs a valid, active STAFF- badge
+    undo_own_scans_only: bool = False  # staff may only undo their own scans
+
+    def __post_init__(self) -> None:
+        if self.undo_own_scans_only and not self.require_staff_badge:
+            raise ValueError("undo_own_scans_only only works when require_staff_badge is on")
+        try:
+            ZoneInfo(self.timezone)
+        except (ZoneInfoNotFoundError, ValueError) as error:
+            raise ValueError(f"Unknown time zone {self.timezone!r}") from error
+
+    @property
+    def zone(self) -> ZoneInfo:
+        return ZoneInfo(self.timezone)
+
+
+@dataclass(frozen=True)
+class Staff:
+    staff_code: str
+    name: str
+    active: bool = True
 
 
 @dataclass(frozen=True)
@@ -63,11 +93,14 @@ class Code:
 
 @dataclass(frozen=True)
 class ScanRequest:
-    """One scan sent by a station (body of POST /scan)."""
+    """One scan sent by a station (body of POST /scan).
+
+    For an undo, `code` is the code whose scan should be reversed.
+    """
 
     code: str
     action: ScanAction
-    staff: str
+    staff: str | None  # STAFF- badge; None when the shop doesn't use badges
     station: str
     scanned_at: datetime
 
@@ -87,7 +120,7 @@ class LogEntry:
     timestamp: datetime
     action: LogAction
     code: str
-    staff: str
+    staff: str | None
     station: str
     change: int  # change actually applied to stock (signed)
     shortfall: int = 0  # units asked for but not in stock
@@ -101,3 +134,4 @@ class ScanOutcome:
     status: OutcomeStatus
     entry: LogEntry | None = None
     item: Item | None = None
+    reason: str = ""  # why a scan was rejected, shown on the station

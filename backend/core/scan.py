@@ -1,13 +1,14 @@
 """Turn a scan (or an undo) into a log entry plus the updated item to save.
 
-Handlers look up the code, the item and the station's last log entry, call these
-functions, and then write the outcome to DynamoDB. Nothing here talks to AWS.
+Handlers look up the shop settings, code, item, staff badge and today's log entries,
+call these functions, and then write the outcome to DynamoDB. Nothing here talks to AWS.
 """
 
+from collections.abc import Iterable
 from dataclasses import replace
 from datetime import UTC, datetime
 
-from core.codes import UNDO_CODE
+from core.codes import normalize_code
 from core.models import (
     Code,
     CodeAction,
@@ -17,7 +18,21 @@ from core.models import (
     OutcomeStatus,
     ScanOutcome,
     ScanRequest,
+    ShopSettings,
+    Staff,
 )
+from core.shop import same_shop_day, staff_problem
+
+
+def format_utc(moment: datetime) -> str:
+    """One fixed text format for times in keys, e.g. 2026-10-17T17:00:00.000000+00:00.
+
+    Always UTC with microseconds, so keys sort by time and the same moment always
+    gives the same text.
+    """
+    if moment.tzinfo is None:
+        raise ValueError("time must include a time zone")
+    return moment.astimezone(UTC).isoformat(timespec="microseconds")
 
 
 def scan_id(station: str, scanned_at: datetime) -> str:
@@ -25,10 +40,7 @@ def scan_id(station: str, scanned_at: datetime) -> str:
 
     The time is converted to UTC, so 10:00+02:00 and 08:00Z give the same key.
     """
-    if scanned_at.tzinfo is None:
-        raise ValueError("scanned_at must include a time zone")
-    utc = scanned_at.astimezone(UTC)
-    return f"{station}#{utc.isoformat(timespec='microseconds')}"
+    return f"{station}#{format_utc(scanned_at)}"
 
 
 def clamp_stock(stock: int, change: int) -> tuple[int, int]:
@@ -45,14 +57,20 @@ def process_scan(
     code: Code,
     item: Item,
     *,
+    settings: ShopSettings,
+    staff: Staff | None = None,
     already_seen: bool = False,
 ) -> ScanOutcome:
     """Add or deduct a code's quantity from the item's stock.
 
-    Set `already_seen` when this station + scanned_at was processed before.
+    `staff` is the Staff record for the request's badge (only needed when the shop
+    requires badges). Set `already_seen` when this station + scanned_at was processed
+    before.
     """
     if already_seen:
         return ScanOutcome(OutcomeStatus.DUPLICATE)
+    if problem := staff_problem(settings, request.staff, staff):
+        return ScanOutcome(OutcomeStatus.REJECTED, reason=problem)
     if code.item_id != item.item_id:
         raise ValueError(f"Code {code.code} belongs to {code.item_id}, not {item.item_id}")
 
@@ -60,37 +78,77 @@ def process_scan(
     return _apply(request, item, change=code.quantity, action=action, code=code.code)
 
 
+def find_undo_target(
+    request: ScanRequest,
+    entries: Iterable[LogEntry],
+    settings: ShopSettings,
+) -> LogEntry | None:
+    """Pick the scan that an UNDO + code should reverse, or None if there is none.
+
+    The target is the most recent scan of exactly that code that:
+    - was made at this station, today (in the shop's time zone), before the undo
+    - hasn't been undone yet
+    - was made by the same staff member, if the shop has `undo_own_scans_only` on
+
+    `entries` should be this station's log entries for today, including earlier undos
+    (so we know which scans are already undone).
+    """
+    entries = list(entries)
+    already_undone = {e.undoes for e in entries if e.action is LogAction.UNDO}
+    wanted_code = normalize_code(request.code)
+
+    candidates = [
+        e
+        for e in entries
+        if e.action in (LogAction.TAKE, LogAction.RESTOCK)
+        and e.code == wanted_code
+        and e.station == request.station
+        and e.timestamp < request.scanned_at
+        and same_shop_day(e.timestamp, request.scanned_at, settings)
+        and e.entry_id not in already_undone
+        and (not settings.undo_own_scans_only or e.staff == request.staff)
+    ]
+    return max(candidates, key=lambda e: e.timestamp, default=None)
+
+
 def build_undo(
     request: ScanRequest,
-    last_entry: LogEntry | None,
+    target: LogEntry | None,
     item: Item | None,
     *,
+    settings: ShopSettings,
+    staff: Staff | None = None,
     already_seen: bool = False,
 ) -> ScanOutcome:
-    """Reverse the station's most recent log entry by adding an opposite entry.
+    """Reverse `target` (from `find_undo_target`) by adding an opposite log entry.
 
-    `last_entry` is the newest entry from this station and `item` is its item (both
-    None if the station has no entries yet). If the newest entry is already an undo,
-    there is nothing to reverse, so pressing INV-UNDO twice does not reach older scans.
+    `item` is the target's item (None when there is no target).
     """
     if already_seen:
         return ScanOutcome(OutcomeStatus.DUPLICATE)
-    if last_entry is None or last_entry.action not in (LogAction.TAKE, LogAction.RESTOCK):
-        return ScanOutcome(OutcomeStatus.NOTHING_TO_UNDO)
-    if last_entry.station != request.station:
+    if problem := staff_problem(settings, request.staff, staff):
+        return ScanOutcome(OutcomeStatus.REJECTED, reason=problem)
+    if target is None:
+        return ScanOutcome(OutcomeStatus.NOTHING_TO_UNDO, reason=_nothing_to_undo(request))
+    if target.station != request.station:
         raise ValueError("A station can only undo its own scans")
-    if item is None or item.item_id != last_entry.item_id:
-        raise ValueError(f"Undo needs item {last_entry.item_id}")
+    if item is None or item.item_id != target.item_id:
+        raise ValueError(f"Undo needs item {target.item_id}")
 
     # Reverse what was actually applied, not what the code asked for (it may have been clamped).
     return _apply(
         request,
         item,
-        change=-last_entry.change,
+        change=-target.change,
         action=LogAction.UNDO,
-        code=UNDO_CODE,
-        undoes=last_entry.entry_id,
+        code=target.code,
+        undoes=target.entry_id,
     )
+
+
+def _nothing_to_undo(request: ScanRequest) -> str:
+    who = f" for {request.staff}" if request.staff else ""
+    return f"Nothing to undo{who} today."
 
 
 def _apply(
