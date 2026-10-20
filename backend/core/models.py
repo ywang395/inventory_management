@@ -10,6 +10,8 @@ from datetime import datetime
 from enum import StrEnum
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from core.codes import normalize_code
+
 
 class CodeAction(StrEnum):
     TAKE = "take"
@@ -90,6 +92,10 @@ class Code:
     action: CodeAction
 
     def __post_init__(self) -> None:
+        # Save codes the way scans arrive, so a barcode registered with an iPhone
+        # (13 digits) still matches a USB scanner (12 digits). The dataclass is frozen,
+        # hence object.__setattr__.
+        object.__setattr__(self, "code", normalize_code(self.code))
         if self.action is CodeAction.TAKE and self.quantity >= 0:
             raise ValueError(f"Take code {self.code} must have a negative quantity")
         if self.action is CodeAction.RESTOCK and self.quantity <= 0:

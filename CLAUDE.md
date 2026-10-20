@@ -11,10 +11,11 @@ This is a student portfolio project built part-time (10–15 hrs/week). A real s
 - `/backend/core` done: code types, units, undo by code (today, this station), never-negative clamp, duplicate keys, shop settings (optional staff badges), `recalculate_stock` (stock = sum of the log's `change`). Tested with pytest.
 - Phase 1 keeps it simple: each item has one `stock` number. Batches, expiry and FIFO come in Phase 2.
 - Deployed to `us-east-2`: `CDKToolkit` (bootstrap), `CafeInventory-Budget` ($10/month alerts) and `CafeInventory-dev`: 6 DynamoDB tables (key builders in `backend/store/keys.py`) plus the station API, `POST /scan` and `GET /station/config` (handlers in `backend/handlers`, DynamoDB access in `backend/store/dynamo.py`). The API URL and the door-1 API key id are stack outputs; get the key value with `aws apigateway get-api-key --api-key <id> --include-value`.
-- Seed script `scripts/seed.py` has been run against dev: test shop `cafe-01` with 6 items, 14 codes, 2 staff, and station door-1 linked to the API key. `GET /station/config` returns the shop settings (HTTP 200), which also confirmed Lambda's Python 3.12 runtime has the time zone database (no `tzdata` package needed).
+- Seed script `scripts/seed.py` has been run against dev: test shop `cafe-01` with 7 items (incl. a test candle with a real barcode), 15 codes, 2 staff, and station door-1 linked to the API key. `GET /station/config` returns the shop settings (HTTP 200), which also confirmed Lambda's Python 3.12 runtime has the time zone database (no `tzdata` package needed).
 - Station API tested end to end on dev with curl: scan, resend of the same scan (`duplicate`, not saved), a second scan, two undos (each reverses the latest not-yet-undone scan) and a third undo (`nothing_to_undo`). Lids stock went 30 → 18 → 6 → 18 → 30 and ScanLog holds the matching `take` / `undo` entries.
+- Also tested from an iPhone Shortcut acting as station door-1 (Scan QR or Barcode → Format Date `yyyy-MM-dd'T'HH:mm:ss.SSSZZZZZ` → POST /scan with the `x-api-key` header and a JSON body → show `message`). Scanning the test candle's real barcode took 1 candle (10 → 9). It showed that iPhones read UPC-A barcodes as 13 digits with a leading `0`; codes are now normalized so both forms match (deployed).
 - Known gap: the seed sets opening stock directly, without log entries, so on dev the log doesn't add up to `stock` yet (e.g. lids: log sums to 0, stock is 30).
-- **Next:** point `scanner_sim.py` at the real API (optional iPhone Shortcut test any time).
+- **Next:** point `scanner_sim.py` at the real API. Open question first: when a shop requires badges, how long a scanned badge stays active at the station (suggested: until another badge is scanned, or 2 minutes without a scan).
 
 Update this section as phases are completed.
 
@@ -69,7 +70,7 @@ CLAUDE.md
 ## Domain rules (important)
 
 - **Smallest unit:** stock is always stored in the item's smallest unit (e.g. bags of lids). A code can represent several units (1 box = 12 bags).
-- **Codes:** our own codes start with `INV-` (e.g. `INV-LID12-1BAG`, `INV-LID12-1BOX`, `INV-LID12-RESTOCK-BOX`). Staff badges start with `STAFF-`. Supplier UPC barcodes are also allowed and map to an item. Ignore any other scanned code.
+- **Codes:** our own codes start with `INV-` (e.g. `INV-LID12-1BAG`, `INV-LID12-1BOX`, `INV-LID12-RESTOCK-BOX`). Staff badges start with `STAFF-`. Supplier UPC barcodes are also allowed and map to an item. Ignore any other scanned code. Codes are normalized (trimmed, upper case) before lookup and when saved; a 13-digit barcode starting with `0` is the 12-digit UPC-A it contains (iPhones read UPC-A that way, USB scanners usually don't), so both match.
 - **Undo:** scanning `INV-UNDO` puts the station in undo mode (about 10 s, shown on screen; cancelled by another `INV-UNDO` or a badge). The next code scanned reverses the most recent not-yet-undone scan of exactly that code, made today (shop's local time) at this station. Repeat to undo more. Nothing matching → "Nothing to undo". Older mistakes are fixed with a manager correction. The station sends one request: `{action: "undo", code: <code to undo>}`.
 - **Staff badges are optional per shop** (owner's setting on the Shops record):
   - `require_staff_badge` (default off): when on, every scan and undo needs a valid, active `STAFF-` badge. The API enforces this, not the station. When off, scans need no badge (staff is recorded only if sent).
@@ -154,7 +155,7 @@ Separate tables (one per entity), all on-demand. Attribute names are `pk` / `sk`
 - Python: type hints, small functions, `ruff` for lint/format, `pytest` for tests.
 - DynamoDB code is tested against `moto` (a fake DynamoDB in memory, `backend/tests/conftest.py`); tests never touch the real account.
 - Python env is managed with `uv` (Python 3.12, same as Lambda): `uv sync`, `uv run pytest`, `uv run ruff check . && uv run ruff format .`
-- Seed the dev tables with the test shop `cafe-01` (America/Los_Angeles, badges off, 6 sample items, 14 codes incl. one supplier UPC, 2 staff): `uv run python scripts/seed.py` (keeps current stock; `--reset-stock` puts sample amounts back). Safe to re-run.
+- Seed the dev tables with the test shop `cafe-01` (America/Los_Angeles, badges off, 7 sample items, 15 codes incl. two supplier UPCs (one is a real candle barcode for phone tests), 2 staff): `uv run python scripts/seed.py` (keeps current stock; `--reset-stock` puts sample amounts back). Safe to re-run.
 - CDK: run from `/infra` with the pinned CLI: `npx cdk synth`, `npx cdk deploy <stack>`, `-c stage=dev|prod` (default `dev`). Needs `.env` (copy `.env.example`).
 - Business logic in `/backend/core` as pure functions; handlers only parse input, call core, write to DynamoDB.
 - Config via environment variables; never hard-code ARNs, keys or table names.

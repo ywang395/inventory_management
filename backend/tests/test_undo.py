@@ -2,7 +2,7 @@
 
 import pytest
 
-from core.models import Item, LogAction, LogEntry, OutcomeStatus, ScanOutcome
+from core.models import Code, CodeAction, Item, LogAction, LogEntry, OutcomeStatus, ScanOutcome
 from core.scan import build_undo, find_undo_target, process_scan, scan_id
 from factories import (
     ANNA,
@@ -234,3 +234,13 @@ def test_undo_with_the_wrong_item_is_an_error() -> None:
     milk = Item(item_id="milk", name="Whole milk", smallest_unit="carton")
     with pytest.raises(ValueError):
         build_undo(undo(LID_BOX.code, seconds=5), taken.entry, milk, settings=NO_BADGES)
+
+
+def test_undo_from_a_phone_matches_a_usb_scanner_scan() -> None:
+    # The USB scanner sent 12 digits; the phone sends the same barcode with a 0 in front.
+    upc = Code("012345678905", "lid12", -1, CodeAction.TAKE)
+    scanned = entry_of(process_scan(scan(upc.code), upc, lids(), settings=NO_BADGES))
+
+    target = find_undo_target(undo("0012345678905", seconds=60), [scanned], NO_BADGES)
+
+    assert target == scanned

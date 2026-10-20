@@ -47,6 +47,9 @@ ITEMS = [
          reorder_point=3, lead_time_days=5),
     Item("ice_cream_vanilla", "Vanilla ice cream", "tub", stock=5, category="Ice cream",
          reorder_point=2, lead_time_days=4),
+    # Not café stock: a real product with a real barcode, for testing with a phone camera.
+    Item("candle_rosemary", "Rosemary & Thyme candle", "candle", stock=10, category="Test",
+         reorder_point=3, lead_time_days=7),
 ]  # fmt: skip
 
 TAKE, RESTOCK = CodeAction.TAKE, CodeAction.RESTOCK
@@ -66,6 +69,8 @@ CODES = [
     Code("INV-BEANS-RESTOCK-BAG", "espresso_beans", 1, RESTOCK),
     Code("INV-ICVAN-1TUB", "ice_cream_vanilla", -1, TAKE),
     Code("INV-ICVAN-RESTOCK-TUB", "ice_cream_vanilla", 1, RESTOCK),
+    # The UPC-A barcode printed on the test candle: scanning it takes 1 candle.
+    Code("647658068411", "candle_rosemary", -1, TAKE),
 ]
 
 STAFF = [

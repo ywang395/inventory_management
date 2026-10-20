@@ -86,3 +86,12 @@ def test_table_names_come_from_stack_outputs() -> None:
     }
     names = table_names(outputs)
     assert (names.items, names.scan_log) == ("i", "l")
+
+
+def test_phone_reading_of_the_candle_barcode_finds_it(empty_store: DynamoStore) -> None:
+    # Registered as printed (12 digits); an iPhone reads it with a 0 in front.
+    seed(empty_store, DOOR_KEY)
+
+    reply = scan(empty_store, "0647658068411")
+
+    assert reply["message"] == "Rosemary & Thyme candle -1 candle, 9 left."

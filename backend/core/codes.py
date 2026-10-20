@@ -18,8 +18,16 @@ class CodeKind(StrEnum):
 
 
 def normalize_code(raw: str) -> str:
-    """USB scanners type the code followed by Enter, so trim whitespace and fix case."""
-    return raw.strip().upper()
+    """One spelling per code, whatever scanned it.
+
+    - USB scanners type the code followed by Enter, so trim whitespace and fix case.
+    - A UPC-A barcode (12 digits) is read as EAN-13 by some scanners, iPhones included:
+      the same number with a 0 in front. Drop that 0 so both match the same code.
+    """
+    code = raw.strip().upper()
+    if len(code) == 13 and code.isascii() and code.isdigit() and code.startswith("0"):
+        return code[1:]
+    return code
 
 
 def classify_code(raw: str) -> CodeKind:

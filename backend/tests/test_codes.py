@@ -39,3 +39,17 @@ def test_other_codes_are_ignored(raw: str) -> None:
 def test_scanner_newline_and_lowercase_are_tolerated() -> None:
     assert normalize_code("  inv-lid12-1bag\n") == "INV-LID12-1BAG"
     assert classify_code("inv-undo\r\n") is CodeKind.UNDO
+
+
+@pytest.mark.parametrize(
+    "raw, normalized",
+    [
+        ("0647658068411", "647658068411"),  # an iPhone reading a UPC-A barcode
+        ("647658068411", "647658068411"),  # a USB scanner reading the same barcode
+        ("0012345678905", "012345678905"),  # only the one added 0 is dropped
+        ("4006381333931", "4006381333931"),  # a real EAN-13 (not starting with 0) stays
+        ("01234565", "01234565"),  # 8 digits stay as they are
+    ],
+)
+def test_upc_a_read_as_ean_13_is_the_same_code(raw: str, normalized: str) -> None:
+    assert normalize_code(raw) == normalized
