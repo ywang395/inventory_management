@@ -11,9 +11,9 @@ This is a student portfolio project built part-time (10–15 hrs/week). A real s
 - `/backend/core` done: code types, units, undo by code (today, this station), never-negative clamp, duplicate keys, shop settings (optional staff badges). Tested with pytest.
 - Phase 1 keeps it simple: each item has one `stock` number. Batches, expiry and FIFO come in Phase 2.
 - Deployed to `us-east-2`: `CDKToolkit` (bootstrap), `CafeInventory-Budget` ($10/month alerts) and `CafeInventory-dev`: 6 DynamoDB tables (key builders in `backend/store/keys.py`) plus the station API, `POST /scan` and `GET /station/config` (handlers in `backend/handlers`, DynamoDB access in `backend/store/dynamo.py`). The API URL and the door-1 API key id are stack outputs; get the key value with `aws apigateway get-api-key --api-key <id> --include-value`.
-- Smoke test OK: an unregistered station gets 403 from our Lambda.
-- Seed script `scripts/seed.py` written and tested with moto, **not yet run against dev** (the tables are still empty).
-- **Next:** `aws login`, run the seed, then test end to end with curl (`GET /station/config`, a scan, an undo) and check stock in the Items table. This also shows whether Lambda needs the `tzdata` package. Then the iPhone Shortcut test.
+- Seed script `scripts/seed.py` has been run against dev: test shop `cafe-01` with 6 items, 14 codes, 2 staff, and station door-1 linked to the API key. `GET /station/config` returns the shop settings (HTTP 200), which also confirmed Lambda's Python 3.12 runtime has the time zone database (no `tzdata` package needed).
+- Station API tested end to end on dev with curl: scan, resend of the same scan (`duplicate`, not saved), a second scan, two undos (each reverses the latest not-yet-undone scan) and a third undo (`nothing_to_undo`). Lids stock went 30 → 18 → 6 → 18 → 30 and ScanLog holds the matching `take` / `undo` entries.
+- **Next:** optional iPhone Shortcut test, then `recalculate_stock` in core and pointing `scanner_sim.py` at the real API.
 
 Update this section as phases are completed.
 
@@ -120,8 +120,8 @@ Separate tables (one per entity), all on-demand. Attribute names are `pk` / `sk`
 - [x] Undo by code (today, this station) and owner settings for staff badges, in core
 - [x] `/backend/core` inventory logic with pytest tests (units, undo, never negative, duplicates)
 - [ ] `recalculate_stock(entries)` in core: rebuild an item's stock from its ScanLog (for corrections and audits)
-- [ ] `POST /scan` + `GET /station/config` Lambdas + API Gateway with API key and usage plan. Built, tested and deployed; still to do: the end-to-end check with seed data (a scan changes stock, and the time zone database works on Lambda; add the `tzdata` package if not)
-- [x] Seed script with sample items and codes (`scripts/seed.py`; not yet run against dev)
+- [x] `POST /scan` + `GET /station/config` Lambdas + API Gateway with API key and usage plan (deployed to dev; scan, duplicate and undo tested end to end with curl)
+- [x] Seed script with sample items and codes (`scripts/seed.py`; run against dev)
 - [ ] Point `scanner_sim.py` at the real API (`API_URL`, `API_KEY`)
 - [ ] Script to print the door scan sheet (QR codes for each `INV-` code)
 
