@@ -10,9 +10,10 @@ This is a student portfolio project built part-time (10–15 hrs/week). A real s
 - `station/scanner_station.py` is the Raspberry Pi version (evdev + gpiozero), not yet tested on hardware (not in this repo yet).
 - `/backend/core` done: code types, units, undo by code (today, this station), never-negative clamp, duplicate keys, shop settings (optional staff badges). Tested with pytest.
 - Phase 1 keeps it simple: each item has one `stock` number. Batches, expiry and FIFO come in Phase 2.
-- `/infra` CDK skeleton done. Deployed to `us-east-2`: `CDKToolkit` (bootstrap) and `CafeInventory-Budget` ($10/month alerts). `CafeInventory-dev` is still empty and not deployed.
-- DynamoDB tables defined in `CafeInventory-dev` (6 tables, see Data model) with key builders in `backend/store/keys.py`. Deployed to `us-east-2` (empty).
-- `POST /scan` and `GET /station/config` built (handlers in `backend/handlers`, DynamoDB access in `backend/store/dynamo.py`, API Gateway + Lambdas in `InventoryStack`). Tested with moto; not deployed yet. Lambda's time zone database is unchecked (see the task).
+- Deployed to `us-east-2`: `CDKToolkit` (bootstrap), `CafeInventory-Budget` ($10/month alerts) and `CafeInventory-dev`: 6 DynamoDB tables (key builders in `backend/store/keys.py`) plus the station API, `POST /scan` and `GET /station/config` (handlers in `backend/handlers`, DynamoDB access in `backend/store/dynamo.py`). The API URL and the door-1 API key id are stack outputs; get the key value with `aws apigateway get-api-key --api-key <id> --include-value`.
+- Smoke test OK: an unregistered station gets 403 from our Lambda.
+- Seed script `scripts/seed.py` written and tested with moto, **not yet run against dev** (the tables are still empty).
+- **Next:** `aws login`, run the seed, then test end to end with curl (`GET /station/config`, a scan, an undo) and check stock in the Items table. This also shows whether Lambda needs the `tzdata` package. Then the iPhone Shortcut test.
 
 Update this section as phases are completed.
 
@@ -58,6 +59,7 @@ Dashboard AI chat --> Lambda --> Bedrock (tool calling) --> Lambda tools --> Dyn
   /store        DynamoDB data layer (key formats in keys.py; adds the tenant prefix)
   /tests        pytest
 /station        scanner_sim.py, scanner_station.py
+/scripts        local tools run with your `aws login`: seed.py (test shop), later the door sheet
 /dashboard      React app
 /docs           diagrams, notes
 CLAUDE.md
@@ -118,8 +120,8 @@ Separate tables (one per entity), all on-demand. Attribute names are `pk` / `sk`
 - [x] Undo by code (today, this station) and owner settings for staff badges, in core
 - [x] `/backend/core` inventory logic with pytest tests (units, undo, never negative, duplicates)
 - [ ] `recalculate_stock(entries)` in core: rebuild an item's stock from its ScanLog (for corrections and audits)
-- [ ] `POST /scan` + `GET /station/config` Lambdas + API Gateway with API key and usage plan. Built and tested; still to do: deploy, then check with the seed script that a scan changes stock, and that the time zone database exists on Lambda (add the `tzdata` package if not)
-- [ ] Seed script with sample items and codes
+- [ ] `POST /scan` + `GET /station/config` Lambdas + API Gateway with API key and usage plan. Built, tested and deployed; still to do: the end-to-end check with seed data (a scan changes stock, and the time zone database works on Lambda; add the `tzdata` package if not)
+- [x] Seed script with sample items and codes (`scripts/seed.py`; not yet run against dev)
 - [ ] Point `scanner_sim.py` at the real API (`API_URL`, `API_KEY`)
 - [ ] Script to print the door scan sheet (QR codes for each `INV-` code)
 
@@ -151,6 +153,7 @@ Separate tables (one per entity), all on-demand. Attribute names are `pk` / `sk`
 - Python: type hints, small functions, `ruff` for lint/format, `pytest` for tests.
 - DynamoDB code is tested against `moto` (a fake DynamoDB in memory, `backend/tests/conftest.py`); tests never touch the real account.
 - Python env is managed with `uv` (Python 3.12, same as Lambda): `uv sync`, `uv run pytest`, `uv run ruff check . && uv run ruff format .`
+- Seed the dev tables with the test shop `cafe-01` (America/Los_Angeles, badges off, 6 sample items, 14 codes incl. one supplier UPC, 2 staff): `uv run python scripts/seed.py` (keeps current stock; `--reset-stock` puts sample amounts back). Safe to re-run.
 - CDK: run from `/infra` with the pinned CLI: `npx cdk synth`, `npx cdk deploy <stack>`, `-c stage=dev|prod` (default `dev`). Needs `.env` (copy `.env.example`).
 - Business logic in `/backend/core` as pure functions; handlers only parse input, call core, write to DynamoDB.
 - Config via environment variables; never hard-code ARNs, keys or table names.
@@ -163,6 +166,7 @@ Separate tables (one per entity), all on-demand. Attribute names are `pk` / `sk`
 - Uses the **new AWS experience**: sign-in with an AWS Builder ID; resources live in the project "Touch Grass Later" (an AWS account managed by AWS). There is no root user or IAM user to manage.
 - **Region is fixed to `us-east-2` (Ohio).** AWS blocks other regions for this project (except global services). Deploy everything there.
 - CLI/CDK auth: `aws login` (official AWS CLI installer, not Homebrew), then pick the project in the browser. Credentials last 12 hours; run `aws login` again after that.
+- Local Python scripts (boto3) use the same `aws login` session through the dev-only `botocore[crt]` package; without it boto3 fails with "Missing Dependency".
 - Free plan services cover everything planned (DynamoDB, Lambda, API Gateway, Cognito, S3, SNS, EventBridge, CloudFormation, IAM roles, Budgets). Organizations / IAM Identity Center are not available.
 - **Never "Activate advanced features"** in AWS Settings: it needs a paid upgrade and can't be undone.
 
