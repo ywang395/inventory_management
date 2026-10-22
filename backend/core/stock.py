@@ -1,4 +1,4 @@
-"""An item's stock, rebuilt from its log entries.
+"""An item's stock: rebuilt from its log entries, and how healthy it looks.
 
 The log is the source of truth: every scan, restock, undo and correction records the
 `change` it actually applied to stock, so an item's stock is the sum of those changes.
@@ -6,8 +6,30 @@ Corrections and audits use this to check or repair the running `stock` number.
 """
 
 from collections.abc import Iterable
+from enum import StrEnum
 
-from core.models import LogEntry
+from core.models import Item, LogEntry
+
+
+class StockStatus(StrEnum):
+    OK = "ok"
+    LOW = "low"  # at or below the reorder point: time to order
+    OUT = "out"  # nothing left
+    NEEDS_COUNT = "needs_count"  # a scan took more than we thought was there
+
+
+def stock_status(item: Item) -> StockStatus:
+    """One status per item, for the stock board and later the dashboard's colors.
+
+    NEEDS_COUNT comes first: if the number may be wrong, low/out isn't reliable either.
+    """
+    if item.needs_count:
+        return StockStatus.NEEDS_COUNT
+    if item.stock == 0:
+        return StockStatus.OUT
+    if item.stock <= item.reorder_point:
+        return StockStatus.LOW
+    return StockStatus.OK
 
 
 def recalculate_stock(entries: Iterable[LogEntry]) -> int:

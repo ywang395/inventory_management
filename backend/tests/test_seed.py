@@ -42,10 +42,10 @@ def test_every_code_points_to_a_seeded_item(empty_store: DynamoStore) -> None:
 def test_a_scan_works_on_the_seeded_shop(empty_store: DynamoStore) -> None:
     seed(empty_store, DOOR_KEY)
 
-    reply = scan(empty_store, "INV-LID12-1BOX")
+    reply = scan(empty_store, "INV-LID12-1BAG")
 
     assert reply["status"] == "applied"
-    assert reply["message"] == "12 oz cup lids -12 bag, 18 left."
+    assert reply["message"] == "12 oz cup lids -1 bag, 11 left."
 
 
 def test_supplier_barcode_takes_one_carton(empty_store: DynamoStore) -> None:
@@ -58,21 +58,21 @@ def test_supplier_barcode_takes_one_carton(empty_store: DynamoStore) -> None:
 
 def test_seeding_again_keeps_stock(empty_store: DynamoStore) -> None:
     seed(empty_store, DOOR_KEY)
-    scan(empty_store, "INV-LID12-1BOX")
+    scan(empty_store, "INV-LID12-1BAG")
 
     report = seed(empty_store, DOOR_KEY)
 
-    assert empty_store.get_item(TENANT, "lids_12oz").stock == 18
-    assert "lids_12oz: kept stock 18 bag" in report
+    assert empty_store.get_item(TENANT, "lids_12oz").stock == 11
+    assert "lids_12oz: kept stock 11 bag" in report
 
 
 def test_reset_stock_puts_sample_amounts_back(empty_store: DynamoStore) -> None:
     seed(empty_store, DOOR_KEY)
-    scan(empty_store, "INV-LID12-1BOX")
+    scan(empty_store, "INV-LID12-1BAG")
 
     seed(empty_store, DOOR_KEY, reset_stock=True)
 
-    assert empty_store.get_item(TENANT, "lids_12oz").stock == 30
+    assert empty_store.get_item(TENANT, "lids_12oz").stock == 12
 
 
 def test_table_names_come_from_stack_outputs() -> None:
@@ -95,3 +95,12 @@ def test_phone_reading_of_the_candle_barcode_finds_it(empty_store: DynamoStore) 
     reply = scan(empty_store, "0647658068411")
 
     assert reply["message"] == "Rosemary & Thyme candle -1 candle, 9 left."
+
+
+def test_milk_jug_barcode_takes_one_gallon(empty_store: DynamoStore) -> None:
+    # As an iPhone reads it: the printed 12 digits with a 0 in front.
+    seed(empty_store, DOOR_KEY)
+
+    reply = scan(empty_store, "0078255001097")
+
+    assert reply["message"] == "Producers whole milk -1 gallon, 7 left."

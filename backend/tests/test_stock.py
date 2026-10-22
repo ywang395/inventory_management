@@ -6,7 +6,7 @@ import pytest
 
 from core.models import Code, Item, LogEntry, ScanAction
 from core.scan import build_undo, find_undo_target, process_scan
-from core.stock import recalculate_stock
+from core.stock import StockStatus, recalculate_stock, stock_status
 from factories import LID_BAG, LID_BOX, LID_RESTOCK_BOX, NO_BADGES, lids, scan, undo
 
 SCAN, UNDO = ScanAction.SCAN, ScanAction.UNDO
@@ -82,3 +82,22 @@ def test_entries_must_all_be_for_one_item() -> None:
 
     with pytest.raises(ValueError, match="several items"):
         recalculate_stock([entries[0], other_item])
+
+
+# --- Status for the stock board / dashboard ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "stock, needs_count, status",
+    [
+        (11, False, StockStatus.OK),  # above the reorder point (10)
+        (10, False, StockStatus.LOW),  # at the reorder point: time to order
+        (3, False, StockStatus.LOW),
+        (0, False, StockStatus.OUT),
+        (0, True, StockStatus.NEEDS_COUNT),  # a scan took more than we had
+        (25, True, StockStatus.NEEDS_COUNT),  # restocked since, but still worth a count
+    ],
+)
+def test_stock_status(stock: int, needs_count: bool, status: StockStatus) -> None:
+    item = replace(lids(stock=stock, needs_count=needs_count), reorder_point=10)
+    assert stock_status(item) is status

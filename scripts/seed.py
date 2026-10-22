@@ -34,12 +34,14 @@ SHOP = Shop(
     settings=ShopSettings(timezone="America/Los_Angeles"),  # staff badges off
 )
 
+# Lids and milk start just above their reorder points, so a demo shows "low" after
+# two scans.
 ITEMS = [
-    Item("lids_12oz", "12 oz cup lids", "bag", stock=30, category="Cups & lids",
+    Item("lids_12oz", "12 oz cup lids", "bag", stock=12, category="Cups & lids",
          reorder_point=10, lead_time_days=3),
     Item("cups_12oz", "12 oz hot cups", "sleeve", stock=40, category="Cups & lids",
          reorder_point=15, lead_time_days=3),
-    Item("milk_whole", "Whole milk", "gallon", stock=12, category="Dairy",
+    Item("milk_whole", "Producers whole milk", "gallon", stock=8, category="Dairy",
          reorder_point=6, lead_time_days=1),
     Item("oat_milk", "Oat milk", "carton", stock=18, category="Dairy",
          reorder_point=8, lead_time_days=2),
@@ -61,6 +63,8 @@ CODES = [
     Code("INV-CUP12-RESTOCK-CASE", "cups_12oz", 20, RESTOCK),  # 1 case = 20 sleeves
     Code("INV-MILK-1GAL", "milk_whole", -1, TAKE),
     Code("INV-MILK-RESTOCK-CRATE", "milk_whole", 4, RESTOCK),  # 1 crate = 4 gallons
+    # The UPC-A barcode on a Producers whole milk jug: scanning it takes 1 gallon.
+    Code("078255001097", "milk_whole", -1, TAKE),
     Code("INV-OAT-1CTN", "oat_milk", -1, TAKE),
     Code("INV-OAT-RESTOCK-CASE", "oat_milk", 12, RESTOCK),
     # A supplier barcode (UPC) printed on the oat milk carton: scanning it takes 1 carton.

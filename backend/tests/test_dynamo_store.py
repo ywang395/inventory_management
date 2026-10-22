@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import timedelta
 
 from conftest import DOOR_KEY, TENANT
-from core.models import LogAction
+from core.models import Item, LogAction
 from core.scan import process_scan
 from factories import ANNA, LID_BOX, NO_BADGES, T0, lids, scan
 from store.dynamo import DynamoStore, SaveResult
@@ -97,3 +97,13 @@ def test_log_records_can_be_read_by_item(store: DynamoStore) -> None:
         ExpressionAttributeValues={":pk": "TENANT#cafe-01#ITEM#lid12"},
     )
     assert len(response["Items"]) == 1
+
+
+def test_list_items_returns_only_this_shops_items(store: DynamoStore) -> None:
+    cups = Item("cup12", "12 oz cups", "sleeve", stock=40)
+    store.put_item(TENANT, cups)
+    store.put_item("cafe-02", Item("lid12", "Other shop's lids", "bag", stock=5))
+
+    items = store.list_items(TENANT)
+
+    assert sorted(items, key=lambda i: i.item_id) == [cups, lids(stock=30)]

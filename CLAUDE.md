@@ -15,7 +15,9 @@ This is a student portfolio project built part-time (10–15 hrs/week). A real s
 - Station API tested end to end on dev with curl: scan, resend of the same scan (`duplicate`, not saved), a second scan, two undos (each reverses the latest not-yet-undone scan) and a third undo (`nothing_to_undo`). Lids stock went 30 → 18 → 6 → 18 → 30 and ScanLog holds the matching `take` / `undo` entries.
 - Also tested from an iPhone Shortcut acting as station door-1 (Scan QR or Barcode → Format Date `yyyy-MM-dd'T'HH:mm:ss.SSSZZZZZ` → POST /scan with the `x-api-key` header and a JSON body → show `message`). Scanning the test candle's real barcode took 1 candle (10 → 9). It showed that iPhones read UPC-A barcodes as 13 digits with a leading `0`; codes are now normalized so both forms match (deployed).
 - Known gap: the seed sets opening stock directly, without log entries, so on dev the log doesn't add up to `stock` yet (e.g. lids: log sums to 0, stock is 30).
-- **Next:** point `scanner_sim.py` at the real API. Open question first: when a shop requires badges, how long a scanned badge stays active at the station (suggested: until another badge is scanned, or 2 minutes without a scan).
+- Owner demo on 2026-10-23, prepared on branch `demo-prep`: the iPhone Shortcut scans the real Producers whole milk jug barcode (`078255001097`) and a printed QR code for `INV-LID12-1BAG`; `scripts/stock_board.py` shows stock live on the laptop (status from `stock_status()` in core). The seed's demo amounts (lids 12, milk 8: "low" after two scans) are applied with `seed.py --reset-stock`. After the demo: merge what's worth keeping into `master`.
+- **Open decision:** the station hardware. Raspberry Pi + USB scanner (original plan) or a tablet + USB/Bluetooth scanner running a station web page (recommended: no hardware to maintain, updates by redeploying the page, needs CORS on the API). It decides whether the next task is `scanner_sim.py` or a station web page.
+- **Next:** the station (see the open decision). Open question first: when a shop requires badges, how long a scanned badge stays active at the station (suggested: until another badge is scanned, or 2 minutes without a scan).
 
 Update this section as phases are completed.
 
@@ -155,7 +157,8 @@ Separate tables (one per entity), all on-demand. Attribute names are `pk` / `sk`
 - Python: type hints, small functions, `ruff` for lint/format, `pytest` for tests.
 - DynamoDB code is tested against `moto` (a fake DynamoDB in memory, `backend/tests/conftest.py`); tests never touch the real account.
 - Python env is managed with `uv` (Python 3.12, same as Lambda): `uv sync`, `uv run pytest`, `uv run ruff check . && uv run ruff format .`
-- Seed the dev tables with the test shop `cafe-01` (America/Los_Angeles, badges off, 7 sample items, 15 codes incl. two supplier UPCs (one is a real candle barcode for phone tests), 2 staff): `uv run python scripts/seed.py` (keeps current stock; `--reset-stock` puts sample amounts back). Safe to re-run.
+- Seed the dev tables with the test shop `cafe-01` (America/Los_Angeles, badges off, 7 sample items, 16 codes incl. three supplier UPCs (real barcodes on a milk jug and a test candle, for phone tests), 2 staff): `uv run python scripts/seed.py` (keeps current stock; `--reset-stock` puts sample amounts back). Safe to re-run.
+- Live stock board (read-only, for demos): `uv run python scripts/stock_board.py` (Ctrl+C to stop; `--once` prints once).
 - CDK: run from `/infra` with the pinned CLI: `npx cdk synth`, `npx cdk deploy <stack>`, `-c stage=dev|prod` (default `dev`). Needs `.env` (copy `.env.example`).
 - Business logic in `/backend/core` as pure functions; handlers only parse input, call core, write to DynamoDB.
 - Config via environment variables; never hard-code ARNs, keys or table names.

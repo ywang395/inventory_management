@@ -118,18 +118,16 @@ class DynamoStore:
     def get_item(self, tenant_id: str, item_id: str) -> Item | None:
         # Consistent read: the stock we read is the stock the transaction checks against.
         record = self._get(self.tables.items, keys.item_key(tenant_id, item_id), consistent=True)
-        if record is None:
-            return None
-        return Item(
-            item_id=record["item_id"],
-            name=record["name"],
-            smallest_unit=record["smallest_unit"],
-            stock=int(record["stock"]),
-            needs_count=bool(record.get("needs_count", False)),
-            category=record.get("category", ""),
-            reorder_point=int(record.get("reorder_point", 0)),
-            lead_time_days=int(record.get("lead_time_days", 0)),
+        return None if record is None else _item(record)
+
+    def list_items(self, tenant_id: str) -> list[Item]:
+        """All of a shop's items, for overviews (stock board, later the dashboard)."""
+        paginator = self.client.get_paginator("query")
+        pages = paginator.paginate(
+            TableName=self.tables.items,
+            KeyConditionExpression=Key(keys.PK).eq(keys.tenant_pk(tenant_id)),
         )
+        return [_item(record) for page in pages for record in page["Items"]]
 
     def get_staff(self, tenant_id: str, staff_code: str) -> Staff | None:
         record = self._get(self.tables.staff, keys.staff_key(tenant_id, staff_code))
@@ -282,6 +280,19 @@ class DynamoStore:
     def _get(self, table: str, key: keys.Key, *, consistent: bool = False) -> dict | None:
         response = self.client.get_item(TableName=table, Key=key, ConsistentRead=consistent)
         return response.get("Item")
+
+
+def _item(record: dict) -> Item:
+    return Item(
+        item_id=record["item_id"],
+        name=record["name"],
+        smallest_unit=record["smallest_unit"],
+        stock=int(record["stock"]),
+        needs_count=bool(record.get("needs_count", False)),
+        category=record.get("category", ""),
+        reorder_point=int(record.get("reorder_point", 0)),
+        lead_time_days=int(record.get("lead_time_days", 0)),
+    )
 
 
 def _log_record(tenant_id: str, entry: LogEntry) -> dict:
