@@ -6,7 +6,7 @@ from datetime import timedelta
 from conftest import DOOR_KEY, TENANT
 from core.models import Item, LogAction
 from core.scan import process_scan
-from factories import ANNA, LID_BOX, NO_BADGES, T0, lids, scan
+from factories import ANNA, LID_BAG, LID_BOX, LID_RESTOCK_BOX, NO_BADGES, T0, lids, scan
 from store.dynamo import DynamoStore, SaveResult
 
 
@@ -107,3 +107,13 @@ def test_list_items_returns_only_this_shops_items(store: DynamoStore) -> None:
     items = store.list_items(TENANT)
 
     assert sorted(items, key=lambda i: i.item_id) == [cups, lids(stock=30)]
+
+
+def test_list_codes_returns_only_this_shops_codes(store: DynamoStore) -> None:
+    store.put_code("cafe-02", LID_BOX)
+
+    codes = store.list_codes(TENANT)
+
+    assert sorted(code.code for code in codes) == sorted(
+        code.code for code in (LID_BAG, LID_BOX, LID_RESTOCK_BOX)
+    )

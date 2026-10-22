@@ -106,14 +106,16 @@ class DynamoStore:
 
     def get_code(self, tenant_id: str, code: str) -> Code | None:
         record = self._get(self.tables.codes, keys.code_key(tenant_id, code))
-        if record is None:
-            return None
-        return Code(
-            code=record["code"],
-            item_id=record["item_id"],
-            quantity=int(record["quantity"]),
-            action=CodeAction(record["action"]),
+        return None if record is None else _code(record)
+
+    def list_codes(self, tenant_id: str) -> list[Code]:
+        """All of a shop's codes (for the door scan sheet, later the dashboard)."""
+        paginator = self.client.get_paginator("query")
+        pages = paginator.paginate(
+            TableName=self.tables.codes,
+            KeyConditionExpression=Key(keys.PK).eq(keys.tenant_pk(tenant_id)),
         )
+        return [_code(record) for page in pages for record in page["Items"]]
 
     def get_item(self, tenant_id: str, item_id: str) -> Item | None:
         # Consistent read: the stock we read is the stock the transaction checks against.
@@ -280,6 +282,15 @@ class DynamoStore:
     def _get(self, table: str, key: keys.Key, *, consistent: bool = False) -> dict | None:
         response = self.client.get_item(TableName=table, Key=key, ConsistentRead=consistent)
         return response.get("Item")
+
+
+def _code(record: dict) -> Code:
+    return Code(
+        code=record["code"],
+        item_id=record["item_id"],
+        quantity=int(record["quantity"]),
+        action=CodeAction(record["action"]),
+    )
 
 
 def _item(record: dict) -> Item:
