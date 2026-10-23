@@ -104,3 +104,12 @@ def test_milk_jug_barcode_takes_one_gallon(empty_store: DynamoStore) -> None:
     reply = scan(empty_store, "0078255001097")
 
     assert reply["message"] == "Producers whole milk -1 gallon, 7 left."
+
+
+def test_station_env_file_has_url_and_key() -> None:
+    from station_env import env_text
+
+    text = env_text("https://example.com/dev/", "secret-value")
+
+    assert "API_URL=https://example.com/dev/\n" in text
+    assert "API_KEY=secret-value\n" in text

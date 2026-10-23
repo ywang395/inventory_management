@@ -8,15 +8,16 @@ dependencies = []
 
 [tool.pytest.ini_options]
 # Lambda code is packaged from /backend, so tests import it the same way: `from core import ...`.
-# CDK code runs from /infra (`from stacks import ...`); local scripts live in /scripts.
-pythonpath = ["backend", "infra", "scripts"]
-testpaths = ["backend/tests", "infra/tests"]
+# CDK code runs from /infra (`from stacks import ...`); local scripts live in /scripts;
+# the scanner station's modules live in /station (`from logic import ...`).
+pythonpath = ["backend", "infra", "scripts", "station"]
+testpaths = ["backend/tests", "infra/tests", "station/tests"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 # Folders that hold our own modules, so imports are sorted as first-party.
-src = ["backend", "backend/tests", "infra", "scripts"]
+src = ["backend", "backend/tests", "infra", "scripts", "station", "station/tests"]
 
 [tool.ruff.lint]
 # E/F: pycodestyle + pyflakes, I: import sorting, UP: modern syntax, B: common bugs
@@ -25,6 +26,7 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.ruff.lint.per-file-ignores]
 # Scripts add /backend to sys.path before importing from it.
 "scripts/*" = ["E402"]
+"station/scanner_sim.py" = ["E402"]
 
 [dependency-groups]
 dev = [
