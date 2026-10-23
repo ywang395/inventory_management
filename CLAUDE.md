@@ -19,7 +19,8 @@ This is a student portfolio project built part-time (10–15 hrs/week). A real s
 - **Owner feedback:** the idea is good, but the main risk is that staff won't scan consistently. Design answer: a fixed hands-free station, scan per box/case taken (not per unit), track only the 10–15 key items, and a weekly count that corrects stock and measures how many scans were missed.
 - **Phase 2 (alerts) done (2026-10-23):** low-stock emails, Items stream → alerts Lambda → SNS. Live-tested on dev: a restock (lids 10 → 22) sent nothing; taking a box (22 → 10) emailed "[Test Cafe] Low stock: 12 oz cup lids" within seconds.
 - **Phase 3 in progress.** Step 1 done: owner login (Cognito user pool `cafe-inventory-dev-owners`, invite-only, immutable `custom:tenant_id`, managed login page, public dashboard client with code + PKCE, callback `http://localhost:5173/`). Live-tested: invited the owner with `scripts/create_owner.py`, signed in with the temporary password, set a new password, redirected back with a code; the user is CONFIRMED with tenant `cafe-01`.
-- **Next:** Phase 3 step 2, the owner API (separate REST API, Cognito authorizer, CORS): `GET /items`, `GET /log`.
+- Step 2 done: owner API `cafe-inventory-dev-owner` (`OwnerApiUrl` output) with `GET /items` and `GET /log`, read-only Lambdas, throttled 10/s. Smoke-tested: 401 without or with a fake token, CORS preflight allowed only for `http://localhost:5173`, station API unaffected. The call with a real login is tested with the dashboard.
+- **Next:** Phase 3 step 3, the dashboard (React + Vite + TypeScript in `/dashboard`, `react-oidc-context`).
 - **Later (proposed):** weekly counts and corrections, with a "scan accuracy" number per week. It is the safety net for missed scans and also fixes the opening-stock gap above.
 
 Update this section as phases are completed.
@@ -111,14 +112,16 @@ Separate tables (one per entity), all on-demand. Attribute names are `pk` / `sk`
 
 ## API (first version)
 
+Two REST APIs: the **station API** (API key per station) and the **owner API** (Cognito login: the ID token in the `Authorization` header; the shop is the token's `custom:tenant_id`, never the request). The owner API allows CORS only from the dashboard addresses (`DASHBOARD_URLS` in the stack).
+
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | POST | `/scan` | API key | Body: `{code, action: "scan" or "undo", staff (optional), scanned_at}`. For undo, `code` is the code to undo. The station and shop come from the API key; any `station` / `tenant_id` in the body is ignored. Replies 200 `{status: applied / duplicate / nothing_to_undo / rejected / ignored, message, item?, change?}`, 400 bad request, 403 unregistered key, 503 busy (resend later). |
 | GET | `/station/config` | API key | Shop settings the station needs (shop and station name, time zone, badge settings); the station caches them for offline use |
-| GET | `/items` | Cognito | Items with current stock and status |
+| GET | `/items` | Cognito (owner API) | Built. `{shop: {name, timezone}, items: [{item_id, name, category, smallest_unit, stock, reorder_point, needs_count, status}]}`; `status` = ok / low / out / needs_count from `stock_status()` in core. 403 if the login has no shop. |
 | POST | `/items` | Cognito | Create item |
 | POST | `/codes` | Cognito | Create code for an item |
-| GET | `/log` | Cognito | Recent activity, filterable by item |
+| GET | `/log?item=<id>&limit=50` | Cognito (owner API) | Built. An item's latest entries from all stations, newest first (by_item index; limit 1–200): `{item, entries: [{entry_id, scanned_at, action, code, change, shortfall, staff, station, undone}]}`. 400 bad request, 404 unknown item (incl. another shop's). |
 | POST | `/corrections` | Cognito | Manual count adjustment |
 
 ## Phases and tasks
@@ -140,7 +143,7 @@ Separate tables (one per entity), all on-demand. Attribute names are `pk` / `sk`
 
 ### Phase 3 — Owner dashboard (target Jan 24, 2027)
 - [x] Cognito user pool and login (invite-only, `custom:tenant_id`, managed login; `scripts/create_owner.py`)
-- [ ] Owner API: separate REST API with a Cognito authorizer (ID token), CORS; `GET /items`, `GET /log`; shop from the token's `custom:tenant_id`
+- [x] Owner API: separate REST API with a Cognito authorizer (ID token), CORS; `GET /items`, `GET /log`; shop from the token's `custom:tenant_id`
 - [ ] Dashboard (React + Vite + TypeScript, `react-oidc-context`): sign in, stock list with green/yellow/red status (low and out first), an item's recent activity
 - [ ] Host on S3 + CloudFront via CDK (own stack; if the project blocks CloudFront, choose another way)
 - [ ] Optional: counts and corrections from the dashboard (`POST /corrections`)

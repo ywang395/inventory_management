@@ -5,7 +5,7 @@ All shops (tenants) share this stack; their data is kept apart by tenant-prefixe
 
     Station --API key--> API Gateway (REST) --> Lambda --> DynamoDB tables
     Items table stream --> alerts Lambda --> SNS topic --> owner's email
-    Owner --Cognito login page--> tokens for the dashboard (owner API comes next)
+    Owner --Cognito login page--> ID token --> owner API (REST) --> Lambda --> DynamoDB
 """
 
 from pathlib import Path
@@ -38,6 +38,8 @@ LOGIN_DOMAIN_PREFIX = "cafe-inventory-ywang395"
 # Where the login page may send people back to (and where sign-out lands). Must match
 # exactly, trailing "/" included. Plain HTTP is only allowed for localhost (development).
 DASHBOARD_URLS = ["http://localhost:5173/"]
+# The same addresses as browser origins (no trailing "/"), for CORS on the owner API.
+DASHBOARD_ORIGINS = [url.rstrip("/") for url in DASHBOARD_URLS]
 
 
 class InventoryStack(cdk.Stack):
@@ -117,6 +119,7 @@ class InventoryStack(cdk.Stack):
         self._add_station_api()
         self._add_alerts(alert_email)
         self._add_owner_login()
+        self._add_owner_api()
 
     def _function(self, name: str, handler: str) -> lambda_.Function:
         # Our own log group, so logs expire after 2 weeks instead of being kept
@@ -334,3 +337,65 @@ class InventoryStack(cdk.Stack):
         cdk.CfnOutput(self, "DashboardClientId", value=self.dashboard_client.user_pool_client_id)
         cdk.CfnOutput(self, "LoginDomainUrl", value=domain.base_url())
         cdk.CfnOutput(self, "OwnerPoolIssuerUrl", value=self.user_pool.user_pool_provider_url)
+
+    def _add_owner_api(self) -> None:
+        # A separate API from the stations': each API has one kind of caller (stations
+        # with API keys, owners with a login), so neither can weaken the other.
+        api = apigw.RestApi(
+            self,
+            "OwnerApi",
+            rest_api_name=f"cafe-inventory-{self.stage}-owner",
+            description="The owner dashboard reads stock here (Cognito login required).",
+            endpoint_types=[apigw.EndpointType.REGIONAL],
+            cloud_watch_role=False,
+            deploy_options=apigw.StageOptions(
+                stage_name=self.stage,
+                # A dashboard needs a handful of requests a minute; this caps runaway costs.
+                throttling_rate_limit=10,
+                throttling_burst_limit=20,
+            ),
+            # Every method needs a valid ID token from the owners' user pool. API Gateway
+            # checks it (signature, expiry, issuer) before our code runs and hands us its
+            # claims, including the shop: custom:tenant_id.
+            default_method_options=apigw.MethodOptions(
+                authorization_type=apigw.AuthorizationType.COGNITO,
+                authorizer=apigw.CognitoUserPoolsAuthorizer(
+                    self, "OwnerAuthorizer", cognito_user_pools=[self.user_pool]
+                ),
+            ),
+            # The dashboard runs on another address, so the browser first asks the API
+            # (an OPTIONS "preflight", which carries no token) whether it may call it.
+            default_cors_preflight_options=apigw.CorsOptions(
+                allow_origins=DASHBOARD_ORIGINS,
+                allow_methods=["GET"],
+                allow_headers=["Authorization", "Content-Type"],
+                max_age=cdk.Duration.hours(1),
+            ),
+        )
+        # Errors from API Gateway itself (no or expired token, throttled) carry no data,
+        # but without a CORS header the browser hides them behind a vague "CORS error".
+        for name, response_type in (
+            ("Default4xx", apigw.ResponseType.DEFAULT_4_XX),
+            ("Default5xx", apigw.ResponseType.DEFAULT_5_XX),
+        ):
+            api.add_gateway_response(
+                name,
+                type=response_type,
+                response_headers={"Access-Control-Allow-Origin": "'*'"},
+            )
+
+        items_function = self._function("OwnerItemsFunction", "handlers.items.handler")
+        log_function = self._function("OwnerLogFunction", "handlers.log.handler")
+        for function in (items_function, log_function):
+            function.add_environment("DASHBOARD_ORIGINS", ",".join(DASHBOARD_ORIGINS))
+
+        # Least privilege, read-only: the dashboard can look, never change stock.
+        self.shops.grant(items_function, "dynamodb:GetItem")
+        self.items.grant(items_function, "dynamodb:Query")
+        self.items.grant(log_function, "dynamodb:GetItem")
+        self.scan_log.grant(log_function, "dynamodb:Query")  # incl. the by_item index
+
+        api.root.add_resource("items").add_method("GET", apigw.LambdaIntegration(items_function))
+        api.root.add_resource("log").add_method("GET", apigw.LambdaIntegration(log_function))
+
+        cdk.CfnOutput(self, "OwnerApiUrl", value=api.url)

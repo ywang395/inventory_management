@@ -159,6 +159,21 @@ class DynamoStore:
         )
         return [_log_entry(record) for page in pages for record in page["Items"]]
 
+    def item_log(self, tenant_id: str, item_id: str, limit: int) -> list[LogEntry]:
+        """An item's latest `limit` log entries from all stations, newest first.
+
+        Uses the by_item index (an index is eventually consistent: a scan made a moment
+        ago may show up a moment later, which is fine for the dashboard).
+        """
+        response = self.client.query(
+            TableName=self.tables.scan_log,
+            IndexName=keys.BY_ITEM_INDEX,
+            KeyConditionExpression=Key(keys.ITEM_PK).eq(keys.scan_log_item_pk(tenant_id, item_id)),
+            ScanIndexForward=False,  # newest first
+            Limit=limit,
+        )
+        return [_log_entry(record) for record in response["Items"]]
+
     # --- Saving a scan ------------------------------------------------------------------
 
     def save(self, tenant_id: str, outcome: ScanOutcome, *, expected_stock: int) -> SaveResult:
