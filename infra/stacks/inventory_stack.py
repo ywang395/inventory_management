@@ -4,6 +4,7 @@ All shops (tenants) share this stack; their data is kept apart by tenant-prefixe
 (see backend/store/keys.py), not by separate stacks.
 
     Station --API key--> API Gateway (REST) --> Lambda --> DynamoDB tables
+    Items table stream --> alerts Lambda --> SNS topic --> owner's email
 """
 
 from pathlib import Path
@@ -12,7 +13,10 @@ import aws_cdk as cdk
 from aws_cdk import aws_apigateway as apigw
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_lambda as lambda_
+from aws_cdk import aws_lambda_event_sources as event_sources
 from aws_cdk import aws_logs as logs
+from aws_cdk import aws_sns as sns
+from aws_cdk import aws_sns_subscriptions as subscriptions
 from constructs import Construct
 
 # The Lambda code is the whole /backend folder (core + store + handlers), minus tests.
@@ -28,10 +32,12 @@ STRING = dynamodb.AttributeType.STRING
 
 
 class InventoryStack(cdk.Stack):
-    def __init__(self, scope: Construct, construct_id: str, *, stage: str, **kwargs) -> None:
+    def __init__(
+        self, scope: Construct, construct_id: str, *, stage: str, alert_email: str, **kwargs
+    ) -> None:
         super().__init__(scope, construct_id, **kwargs)
         self.stage = stage
-        is_prod = stage == "prod"
+        self.is_prod = is_prod = stage == "prod"
 
         def table(name: str, *, with_sort_key: bool = True, **extra) -> dynamodb.Table:
             return dynamodb.Table(
@@ -56,15 +62,17 @@ class InventoryStack(cdk.Stack):
 
         # One record per shop: name, time zone, staff badge settings.
         self.shops = table("Shops", with_sort_key=False)
-        self.items = table("Items")
+        # The stream hands every change to an item, before and after, to the alerts
+        # Lambda: "stock went from 11 to 10" is exactly what a low-stock alert needs.
+        self.items = table("Items", stream=dynamodb.StreamViewType.NEW_AND_OLD_IMAGES)
         self.codes = table("Codes")
         self.staff = table("Staff")
         # API key id -> tenant + station. Not tenant-prefixed: it's how we find the tenant.
         self.stations = table("Stations", with_sort_key=False)
 
         # Append-only log, keyed by station + scanned_at so a resent scan hits the same
-        # key and a conditional write rejects it. The stream will feed the alerts Lambda
-        # (Phase 2) with every new entry.
+        # key and a conditional write rejects it. Its stream (every new entry) isn't
+        # used yet; it's free and kept for later uses such as usage statistics.
         self.scan_log = table("ScanLog", stream=dynamodb.StreamViewType.NEW_IMAGE)
         # One item's history across all stations (dashboard, recalculating stock).
         self.scan_log.add_global_secondary_index(
@@ -85,13 +93,11 @@ class InventoryStack(cdk.Stack):
         for name, t in tables.items():
             cdk.CfnOutput(self, f"{name}TableName", value=t.table_name)
 
-        self._add_station_api(is_prod)
-
-    def _add_station_api(self, is_prod: bool) -> None:
-        code = lambda_.Code.from_asset(
+        # The Lambda code is one asset (the whole /backend folder) shared by every function.
+        self._code = lambda_.Code.from_asset(
             str(BACKEND_DIR), exclude=["tests", "**/__pycache__", "**/*.pyc"]
         )
-        environment = {
+        self._environment = {
             "SHOPS_TABLE": self.shops.table_name,
             "ITEMS_TABLE": self.items.table_name,
             "CODES_TABLE": self.codes.table_name,
@@ -99,30 +105,34 @@ class InventoryStack(cdk.Stack):
             "STATIONS_TABLE": self.stations.table_name,
             "SCAN_LOG_TABLE": self.scan_log.table_name,
         }
+        self._add_station_api()
+        self._add_alerts(alert_email)
 
-        def function(name: str, handler: str) -> lambda_.Function:
-            # Our own log group, so logs expire after 2 weeks instead of being kept
-            # (and billed) forever.
-            log_group = logs.LogGroup(
-                self,
-                f"{name}Logs",
-                retention=logs.RetentionDays.TWO_WEEKS,
-                removal_policy=cdk.RemovalPolicy.RETAIN if is_prod else cdk.RemovalPolicy.DESTROY,
-            )
-            return lambda_.Function(
-                self,
-                name,
-                runtime=lambda_.Runtime.PYTHON_3_12,
-                # ARM (Graviton) costs about 20% less than x86 for the same work.
-                architecture=lambda_.Architecture.ARM_64,
-                handler=handler,
-                code=code,
-                memory_size=256,
-                timeout=cdk.Duration.seconds(10),
-                environment=environment,
-                log_group=log_group,
-            )
+    def _function(self, name: str, handler: str) -> lambda_.Function:
+        # Our own log group, so logs expire after 2 weeks instead of being kept
+        # (and billed) forever.
+        log_group = logs.LogGroup(
+            self,
+            f"{name}Logs",
+            retention=logs.RetentionDays.TWO_WEEKS,
+            removal_policy=cdk.RemovalPolicy.RETAIN if self.is_prod else cdk.RemovalPolicy.DESTROY,
+        )
+        return lambda_.Function(
+            self,
+            name,
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            # ARM (Graviton) costs about 20% less than x86 for the same work.
+            architecture=lambda_.Architecture.ARM_64,
+            handler=handler,
+            code=self._code,
+            memory_size=256,
+            timeout=cdk.Duration.seconds(10),
+            environment=self._environment,
+            log_group=log_group,
+        )
 
+    def _add_station_api(self) -> None:
+        function = self._function
         # Least privilege: each function gets only the actions it needs, per table.
         self.scan_function = function("ScanFunction", "handlers.scan.handler")
         for table in (self.stations, self.shops, self.codes, self.staff):
@@ -179,3 +189,39 @@ class InventoryStack(cdk.Stack):
 
         cdk.CfnOutput(self, "ApiUrl", value=api.url)
         cdk.CfnOutput(self, "Door1ApiKeyId", value=door_key.key_id)
+
+    def _add_alerts(self, alert_email: str) -> None:
+        # SNS fans one message out to every subscriber. For now that's one email; AWS
+        # sends it a "Confirm subscription" email first, and nothing arrives until the
+        # link in it is clicked. Each message carries the shop's tenant_id, so later
+        # every shop owner can subscribe with a filter policy for just their shop.
+        self.alerts_topic = sns.Topic(
+            self, "StockAlerts", display_name="Cafe inventory alerts"
+        )  # display_name is the email's sender name
+        self.alerts_topic.add_subscription(subscriptions.EmailSubscription(alert_email))
+
+        self.alerts_function = self._function("AlertsFunction", "handlers.alerts.handler")
+        self.alerts_function.add_environment("ALERTS_TOPIC_ARN", self.alerts_topic.topic_arn)
+        self.alerts_topic.grant_publish(self.alerts_function)
+        self.shops.grant(self.alerts_function, "dynamodb:GetItem")  # shop name for the email
+
+        # Lambda polls the Items stream for us (no charge for the polling) and calls the
+        # function with batches of changes. Read access to the stream is granted here.
+        self.alerts_function.add_event_source(
+            event_sources.DynamoEventSource(
+                self.items,
+                starting_position=lambda_.StartingPosition.LATEST,
+                batch_size=10,
+                # Only item updates matter (a new item hasn't dropped below anything);
+                # filtered records never start the function, so they cost nothing.
+                filters=[
+                    lambda_.FilterCriteria.filter(
+                        {"eventName": lambda_.FilterRule.is_equal("MODIFY")}
+                    )
+                ],
+                # The function reports which record failed; Lambda retries from there
+                # (twice), so records before it aren't emailed again.
+                report_batch_item_failures=True,
+                retry_attempts=2,
+            )
+        )

@@ -18,6 +18,15 @@ class StockStatus(StrEnum):
     NEEDS_COUNT = "needs_count"  # a scan took more than we thought was there
 
 
+def units(count: int, unit: str) -> str:
+    """'1 bag', '12 bags', '2 × 5 lb bags'. A plain English plural is enough here.
+
+    The × keeps a unit that starts with a number readable ('1 × 5 lb bag', not '1 5 lb bag').
+    """
+    times = " ×" if unit[:1].isdigit() else ""
+    return f"{count}{times} {unit}" if count == 1 else f"{count}{times} {unit}s"
+
+
 def stock_status(item: Item) -> StockStatus:
     """One status per item, for the stock board and later the dashboard's colors.
 

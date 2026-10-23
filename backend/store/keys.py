@@ -42,6 +42,14 @@ def tenant_pk(tenant_id: str) -> str:
     return f"TENANT#{_part('tenant_id', tenant_id)}"
 
 
+def tenant_from_pk(pk: str) -> str:
+    """The tenant id in a `TENANT#<tenant_id>...` key, e.g. from a stream record."""
+    prefix, tenant_id, *_ = pk.split("#")
+    if prefix != "TENANT" or not tenant_id:
+        raise ValueError(f"Not a tenant key: {pk!r}")
+    return tenant_id
+
+
 def shop_key(tenant_id: str) -> Key:
     return {PK: tenant_pk(tenant_id)}
 

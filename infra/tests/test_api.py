@@ -70,7 +70,10 @@ def test_api_url_and_key_id_are_outputs(template: Template) -> None:
 # --- The Lambdas ----------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("handler", ["handlers.scan.handler", "handlers.station_config.handler"])
+@pytest.mark.parametrize(
+    "handler",
+    ["handlers.scan.handler", "handlers.station_config.handler", "handlers.alerts.handler"],
+)
 def test_functions_run_python_312_on_arm(template: Template, handler: str) -> None:
     template.has_resource_properties(
         "AWS::Lambda::Function",

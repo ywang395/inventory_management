@@ -11,6 +11,7 @@ from store.keys import (
     shop_key,
     staff_key,
     station_key,
+    tenant_from_pk,
 )
 
 
@@ -55,3 +56,10 @@ def test_key_parts_must_be_non_empty_and_without_hash(bad: str) -> None:
         item_key(bad, "lids")
     with pytest.raises(ValueError):
         item_key("cafe-01", bad)
+
+
+def test_tenant_comes_back_out_of_a_key() -> None:
+    assert tenant_from_pk("TENANT#cafe-01") == "cafe-01"
+    assert tenant_from_pk("TENANT#cafe-01#STATION#door-1") == "cafe-01"
+    with pytest.raises(ValueError):
+        tenant_from_pk("APIKEY#abc")

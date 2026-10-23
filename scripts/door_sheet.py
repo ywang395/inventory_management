@@ -26,6 +26,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from core.codes import CodeKind, classify_code
 from core.models import Code, CodeAction, Item
+from core.stock import units
 from seed import STACK_NAME, TENANT, stack_outputs, table_names
 from store.dynamo import DynamoStore
 
@@ -69,15 +70,6 @@ PAGE = """<!doctype html>
 </body>
 </html>
 """
-
-
-def units(count: int, unit: str) -> str:
-    """'1 bag', '12 bags', '2 × 5 lb bags'. A plain English plural is enough here.
-
-    The × keeps a unit that starts with a number readable ('1 × 5 lb bag', not '1 5 lb bag').
-    """
-    times = " ×" if unit[:1].isdigit() else ""
-    return f"{count}{times} {unit}" if count == 1 else f"{count}{times} {unit}s"
 
 
 def label(code: Code, item: Item) -> str:

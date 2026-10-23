@@ -12,6 +12,7 @@ from enum import StrEnum
 
 import boto3
 from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.types import TypeDeserializer
 
 from core.models import (
     Code,
@@ -282,6 +283,19 @@ class DynamoStore:
     def _get(self, table: str, key: keys.Key, *, consistent: bool = False) -> dict | None:
         response = self.client.get_item(TableName=table, Key=key, ConsistentRead=consistent)
         return response.get("Item")
+
+
+_DESERIALIZER = TypeDeserializer()
+
+
+def item_from_stream_image(image: dict) -> tuple[str, Item]:
+    """(tenant id, item) from an Items stream record's OldImage or NewImage.
+
+    Stream images use DynamoDB's typed JSON ({"stock": {"N": "10"}}), unlike the plain
+    values the boto3 resource returns, so they are converted first.
+    """
+    record = _DESERIALIZER.deserialize({"M": image})
+    return keys.tenant_from_pk(record[keys.PK]), _item(record)
 
 
 def _code(record: dict) -> Code:

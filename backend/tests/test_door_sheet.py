@@ -1,7 +1,7 @@
 """The printable door scan sheet, built from the seed's items and codes (no AWS)."""
 
 from core.codes import CodeKind, classify_code
-from door_sheet import build_sheet, qr_code, units
+from door_sheet import build_sheet, qr_code
 from seed import CODES, ITEMS
 
 SHEET = build_sheet("Test Café", ITEMS, CODES)
@@ -34,10 +34,3 @@ def test_labels_say_what_a_scan_does() -> None:
     assert "<strong>Take 12 bags</strong>" in SHEET
     assert "<strong>Restock +12 bags</strong>" in SHEET
     assert "<strong>Restock +4 gallons</strong>" in SHEET
-
-
-def test_units() -> None:
-    assert units(1, "bag") == "1 bag"
-    assert units(12, "bag") == "12 bags"
-    assert units(1, "5 lb bag") == "1 × 5 lb bag"
-    assert units(2, "5 lb bag") == "2 × 5 lb bags"

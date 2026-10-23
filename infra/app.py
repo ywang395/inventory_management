@@ -24,7 +24,10 @@ def build(app: cdk.App, stage: str, alert_email: str) -> None:
         region=os.environ.get("CDK_DEFAULT_REGION"),
     )
 
-    inventory = InventoryStack(app, f"CafeInventory-{stage}", stage=stage, env=env)
+    # Stock alerts go to the same address as the budget alerts.
+    inventory = InventoryStack(
+        app, f"CafeInventory-{stage}", stage=stage, alert_email=alert_email, env=env
+    )
     cdk.Tags.of(inventory).add("Stage", stage)
 
     BudgetStack(app, "CafeInventory-Budget", alert_email=alert_email, env=env)

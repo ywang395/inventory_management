@@ -55,11 +55,13 @@ def test_all_tables_are_on_demand_with_generated_names() -> None:
         assert "TableName" not in props, f"{name} should not hard-code its name"
 
 
-def test_only_scan_log_has_a_stream() -> None:
+def test_items_and_scan_log_have_streams() -> None:
     streams = {
         name: resource["Properties"].get("StreamSpecification")
         for name, resource in tables(inventory_template()).items()
     }
+    # Items: before + after of every change, for stock alerts.
+    assert streams.pop("Items") == {"StreamViewType": "NEW_AND_OLD_IMAGES"}
     assert streams.pop("ScanLog") == {"StreamViewType": "NEW_IMAGE"}
     assert all(stream is None for stream in streams.values())
 
