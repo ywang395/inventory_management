@@ -5,12 +5,14 @@ All shops (tenants) share this stack; their data is kept apart by tenant-prefixe
 
     Station --API key--> API Gateway (REST) --> Lambda --> DynamoDB tables
     Items table stream --> alerts Lambda --> SNS topic --> owner's email
+    Owner --Cognito login page--> tokens for the dashboard (owner API comes next)
 """
 
 from pathlib import Path
 
 import aws_cdk as cdk
 from aws_cdk import aws_apigateway as apigw
+from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_lambda_event_sources as event_sources
@@ -29,6 +31,13 @@ ITEM_PK = "item_pk"
 BY_ITEM_INDEX = "by_item"
 
 STRING = dynamodb.AttributeType.STRING
+
+# Owners sign in on Cognito's own login page at https://<prefix>.auth.<region>.amazoncognito.com.
+# The prefix must be unique among all Cognito users in the region, hence the suffix.
+LOGIN_DOMAIN_PREFIX = "cafe-inventory-ywang395"
+# Where the login page may send people back to (and where sign-out lands). Must match
+# exactly, trailing "/" included. Plain HTTP is only allowed for localhost (development).
+DASHBOARD_URLS = ["http://localhost:5173/"]
 
 
 class InventoryStack(cdk.Stack):
@@ -107,6 +116,7 @@ class InventoryStack(cdk.Stack):
         }
         self._add_station_api()
         self._add_alerts(alert_email)
+        self._add_owner_login()
 
     def _function(self, name: str, handler: str) -> lambda_.Function:
         # Our own log group, so logs expire after 2 weeks instead of being kept
@@ -225,3 +235,102 @@ class InventoryStack(cdk.Stack):
                 retry_attempts=2,
             )
         )
+
+    def _add_owner_login(self) -> None:
+        removal = cdk.RemovalPolicy.RETAIN if self.is_prod else cdk.RemovalPolicy.DESTROY
+        self.user_pool = cognito.UserPool(
+            self,
+            "OwnerPool",
+            user_pool_name=f"cafe-inventory-{self.stage}-owners",
+            # Owners and managers are invited (scripts/create_owner.py); nobody can sign
+            # themselves up, so nobody can attach themselves to a shop.
+            self_sign_up_enabled=False,
+            sign_in_aliases=cognito.SignInAliases(email=True),
+            sign_in_case_sensitive=False,
+            auto_verify=cognito.AutoVerifiedAttrs(email=True),
+            account_recovery=cognito.AccountRecovery.EMAIL_ONLY,
+            password_policy=cognito.PasswordPolicy(
+                min_length=12,
+                require_lowercase=True,
+                require_uppercase=True,
+                require_digits=True,
+                require_symbols=True,
+                temp_password_validity=cdk.Duration.days(7),
+            ),
+            # The shop a login belongs to. Set once when the user is created and never
+            # changeable afterwards, not even by the user, so the owner API can trust it
+            # (it arrives in the ID token as "custom:tenant_id").
+            custom_attributes={
+                "tenant_id": cognito.StringAttribute(min_len=1, max_len=64, mutable=False)
+            },
+            # Essentials: needed for the newer managed login page; free up to 10,000
+            # monthly active users.
+            feature_plan=cognito.FeaturePlan.ESSENTIALS,
+            # Prod asks for an authenticator-app code at every sign-in. Dev leaves it off
+            # (a development-only exception) so testing stays quick.
+            mfa=cognito.Mfa.REQUIRED if self.is_prod else cognito.Mfa.OFF,
+            mfa_second_factor=cognito.MfaSecondFactor(otp=True, sms=False)
+            if self.is_prod
+            else None,
+            user_invitation=cognito.UserInvitationConfig(
+                email_subject="Your Café Inventory login",
+                email_body=(
+                    "Hello! Your Café Inventory login is {username} and your temporary "
+                    "password is {####} . You'll choose your own password the first time "
+                    "you sign in."
+                ),
+            ),
+            deletion_protection=self.is_prod,
+            removal_policy=removal,
+        )
+
+        domain = self.user_pool.add_domain(
+            "LoginDomain",
+            cognito_domain=cognito.CognitoDomainOptions(
+                domain_prefix=f"{LOGIN_DOMAIN_PREFIX}-{self.stage}"
+            ),
+            managed_login_version=cognito.ManagedLoginVersion.NEWER_MANAGED_LOGIN,
+        )
+
+        self.dashboard_client = self.user_pool.add_client(
+            "DashboardClient",
+            user_pool_client_name=f"dashboard-{self.stage}",
+            # A browser app can't keep a secret, so it has none. Sign-in uses the
+            # authorization code flow with PKCE, which is safe without one.
+            generate_secret=False,
+            o_auth=cognito.OAuthSettings(
+                flows=cognito.OAuthFlows(authorization_code_grant=True),
+                scopes=[cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL],
+                callback_urls=DASHBOARD_URLS,
+                logout_urls=DASHBOARD_URLS,
+            ),
+            supported_identity_providers=[cognito.UserPoolClientIdentityProvider.COGNITO],
+            auth_flows=cognito.AuthFlow(user_srp=True),
+            prevent_user_existence_errors=True,  # "wrong email or password", never which one
+            enable_token_revocation=True,  # signing out really ends the session
+            id_token_validity=cdk.Duration.hours(1),
+            access_token_validity=cdk.Duration.hours(1),
+            refresh_token_validity=cdk.Duration.hours(12),  # about a work day
+            # The dashboard can read the shop id (it's in the ID token) but never write it.
+            read_attributes=cognito.ClientAttributes()
+            .with_standard_attributes(email=True, email_verified=True)
+            .with_custom_attributes("tenant_id"),
+            write_attributes=cognito.ClientAttributes().with_standard_attributes(email=True),
+        )
+
+        # Managed login needs a style for each app client, or its login page doesn't
+        # work. These are Cognito's default colors and layout; they can be changed later.
+        branding = cognito.CfnManagedLoginBranding(
+            self,
+            "DashboardLoginBranding",
+            user_pool_id=self.user_pool.user_pool_id,
+            client_id=self.dashboard_client.user_pool_client_id,
+            use_cognito_provided_values=True,
+        )
+        branding.node.add_dependency(domain)
+
+        # The dashboard needs these (they're not secrets: the login page is public).
+        cdk.CfnOutput(self, "OwnerPoolId", value=self.user_pool.user_pool_id)
+        cdk.CfnOutput(self, "DashboardClientId", value=self.dashboard_client.user_pool_client_id)
+        cdk.CfnOutput(self, "LoginDomainUrl", value=domain.base_url())
+        cdk.CfnOutput(self, "OwnerPoolIssuerUrl", value=self.user_pool.user_pool_provider_url)

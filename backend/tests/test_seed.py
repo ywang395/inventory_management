@@ -113,3 +113,15 @@ def test_station_env_file_has_url_and_key() -> None:
 
     assert "API_URL=https://example.com/dev/\n" in text
     assert "API_KEY=secret-value\n" in text
+
+
+def test_owner_login_is_tied_to_the_test_shop() -> None:
+    from create_owner import owner_attributes
+
+    attributes = {a["Name"]: a["Value"] for a in owner_attributes("owner@example.com", TENANT)}
+
+    assert attributes == {
+        "email": "owner@example.com",
+        "email_verified": "true",
+        "custom:tenant_id": "cafe-01",
+    }

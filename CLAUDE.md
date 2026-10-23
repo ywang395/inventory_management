@@ -18,7 +18,8 @@ This is a student portfolio project built part-time (10–15 hrs/week). A real s
 - Owner demo (2026-10-23): the iPhone Shortcut scanned the real Producers whole milk jug barcode (`078255001097`) and the printed door sheet (`scripts/door_sheet.py`); `scripts/stock_board.py` showed stock live (status from `stock_status()` in core). Demo amounts (lids 12, milk 8: "low" after two scans) come from `seed.py --reset-stock`. The demo work is merged into `main`.
 - **Owner feedback:** the idea is good, but the main risk is that staff won't scan consistently. Design answer: a fixed hands-free station, scan per box/case taken (not per unit), track only the 10–15 key items, and a weekly count that corrects stock and measures how many scans were missed.
 - **Phase 2 (alerts) done (2026-10-23):** low-stock emails, Items stream → alerts Lambda → SNS. Live-tested on dev: a restock (lids 10 → 22) sent nothing; taking a box (22 → 10) emailed "[Test Cafe] Low stock: 12 oz cup lids" within seconds.
-- **Next:** Phase 3, the owner dashboard (Cognito login, stock list).
+- **Phase 3 in progress.** Step 1 done: owner login (Cognito user pool `cafe-inventory-dev-owners`, invite-only, immutable `custom:tenant_id`, managed login page, public dashboard client with code + PKCE, callback `http://localhost:5173/`). Live-tested: invited the owner with `scripts/create_owner.py`, signed in with the temporary password, set a new password, redirected back with a code; the user is CONFIRMED with tenant `cafe-01`.
+- **Next:** Phase 3 step 2, the owner API (separate REST API, Cognito authorizer, CORS): `GET /items`, `GET /log`.
 - **Later (proposed):** weekly counts and corrections, with a "scan accuracy" number per week. It is the safety net for missed scans and also fixes the opening-stock gap above.
 
 Update this section as phases are completed.
@@ -138,10 +139,11 @@ Separate tables (one per entity), all on-demand. Attribute names are `pk` / `sk`
 - Skipped (not going to production): `POST /batches` with expiry, FIFO deduction across batches, EventBridge daily expiry job
 
 ### Phase 3 — Owner dashboard (target Jan 24, 2027)
-- [ ] Cognito user pool and login
-- [ ] Stock list with green/yellow/red status
-- [ ] Expiring soon, low stock, activity log with corrections
-- [ ] Host on S3 + CloudFront via CDK
+- [x] Cognito user pool and login (invite-only, `custom:tenant_id`, managed login; `scripts/create_owner.py`)
+- [ ] Owner API: separate REST API with a Cognito authorizer (ID token), CORS; `GET /items`, `GET /log`; shop from the token's `custom:tenant_id`
+- [ ] Dashboard (React + Vite + TypeScript, `react-oidc-context`): sign in, stock list with green/yellow/red status (low and out first), an item's recent activity
+- [ ] Host on S3 + CloudFront via CDK (own stack; if the project blocks CloudFront, choose another way)
+- [ ] Optional: counts and corrections from the dashboard (`POST /corrections`)
 
 ### Phase 4 — Pilot (Jan 25 – Feb 21)
 - [ ] Deploy station in the shop, weekly spot counts, fix issues
@@ -164,6 +166,7 @@ Separate tables (one per entity), all on-demand. Attribute names are `pk` / `sk`
 - Scanner station: `uv run python scripts/station_env.py` once (writes `station/.env` with the API URL and key, never printed), then `uv run --env-file station/.env python station/scanner_sim.py`. Its queue is `station/station.db` (git-ignored). No extra packages: `sqlite3` and `urllib` from Python itself.
 - Door scan sheet: `uv run python scripts/door_sheet.py` writes `out/door-sheet.html` (git-ignored) and opens it; print from the browser. QR codes come from `segno` (dev dependency) and must be regular QR, not Micro QR (phones can't read those; a test checks this).
 - CDK: run from `/infra` with the pinned CLI: `npx cdk synth`, `npx cdk deploy <stack>`, `-c stage=dev|prod` (default `dev`). Needs `.env` (copy `.env.example`).
+- Owner logins: `uv run --env-file .env python scripts/create_owner.py` invites `BUDGET_ALERT_EMAIL` (or `--email`) to shop `cafe-01`; Cognito emails a temporary password (`--resend` if it expired after 7 days). Login page: `LoginDomainUrl` output. Dev pool has MFA off (dev-only exception); prod requires an authenticator app.
 - Stock alerts and budget alerts go to `BUDGET_ALERT_EMAIL`. After the first deploy of a stack (or a new address), AWS emails "Subscription Confirmation": click the link, or no alerts arrive. Check with `aws sns list-subscriptions-by-topic` (`PendingConfirmation` = not clicked yet).
 - Business logic in `/backend/core` as pure functions; handlers only parse input, call core, write to DynamoDB.
 - Config via environment variables; never hard-code ARNs, keys or table names.
